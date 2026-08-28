@@ -1,0 +1,41 @@
+#!/usr/bin/env python3
+"""Stop optional MCP helper container. Policy DB is preserved."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _bootstrap import bootstrap
+
+bootstrap()
+
+from mcp_docker import ensure_down  # noqa: E402
+from policy_db import resolve_store  # noqa: E402
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--json", action="store_true")
+    args = parser.parse_args()
+    store = resolve_store()
+    st = ensure_down(store)
+    payload = {
+        "ok": True,
+        "container_running": st.container_running,
+        "policy_preserved": True,
+        "policy_db": str(store.db_path),
+    }
+    if args.json:
+        print(json.dumps(payload, indent=2))
+    else:
+        print("sonar-mcp-down: helper stopped (policy DB kept)")
+        print(f"  policy: {store.db_path}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

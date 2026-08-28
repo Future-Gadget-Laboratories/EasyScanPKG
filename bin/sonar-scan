@@ -1,0 +1,173 @@
+#!/usr/bin/env bash
+# Run SonarScanner against the local (or remote) SonarQube server.
+# Usage:
+#   sonar-scan [--workspace PATH] [--sources RELPATH] [--project-key KEY]
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+export BRIDGE="$ROOT"
+export SFT_AGENT_BRIDGE="$ROOT"
+
+WORKSPACE=""
+SOURCES="make/make-module/modulebuilder/mm"
+PROJECT_KEY=""
+COMPILE_COMMANDS=""
+DEFAULT_WS=""
+EXAMPLE_WS="$HOME/Desktop/IS-P2QR/CB/CipherBank-src"
+
+usage() {
+  cat <<EOF
+Usage: $(basename "$0") [options]
+
+  --workspace PATH            Project root to scan (default: desktop.env / \$PWD)
+  --sources CSV               Relative source dirs (default: make/make-module/modulebuilder/mm)
+  --project-key KEY           Override project key (default: from sonar-local.env)
+  --compile-commands PATH     Relative path to compile_commands.json (CFamily Compilation DB mode)
+
+Scans with sonarsource/sonar-scanner-cli over Docker --network=host.
+Community Build analyzes Python/JS/Java/… well. C/C++ requires a Sonar edition
+with CFamily (see sonar-languages). Assembly and Julia are not supported by Sonar.
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --workspace) WORKSPACE="$2"; shift 2 ;;
+    --sources) SOURCES="$2"; shift 2 ;;
+    --project-key) PROJECT_KEY="$2"; shift 2 ;;
+    --compile-commands) COMPILE_COMMANDS="$2"; shift 2 ;;
+    -h|--help) usage; exit 0 ;;
+    *) echo "Unknown option: $1" >&2; usage; exit 2 ;;
+  esac
+done
+
+if [[ -z "$WORKSPACE" ]] && [[ -f "$HOME/.config/sft/desktop.env" ]]; then
+  # shellcheck disable=SC1091
+  source "$HOME/.config/sft/desktop.env"
+  WORKSPACE="${SFT_SONAR_WORKSPACE:-}"
+fi
+if [[ -z "$WORKSPACE" ]]; then
+  if [[ -d "$EXAMPLE_WS" ]]; then
+    WORKSPACE="$EXAMPLE_WS"
+  else
+    WORKSPACE="$(pwd)"
+  fi
+fi
+WORKSPACE="$(cd "$WORKSPACE" && pwd)"
+
+set -a
+[[ -f "$HOME/.config/sft/sonar.env" ]] && . "$HOME/.config/sft/sonar.env"
+[[ -f "$HOME/.config/sft/sonar-local.env" ]] && . "$HOME/.config/sft/sonar-local.env"
+set +a
+
+: "${SONARQUBE_URL:=http://127.0.0.1:9000}"
+: "${SONARQUBE_TOKEN:?Set SONARQUBE_TOKEN in ~/.config/sft/sonar-local.env (run sonar-local-up)}"
+PROJECT_KEY="${PROJECT_KEY:-${SONARQUBE_PROJECT_KEY:-local-scan}}"
+
+if ! command -v docker >/dev/null 2>&1; then
+  echo "docker is required" >&2
+  exit 1
+fi
+
+# Ensure local server when pointing at localhost
+if [[ "$SONARQUBE_URL" == *"127.0.0.1"* ]] || [[ "$SONARQUBE_URL" == *"localhost"* ]]; then
+  "$ROOT/bin/sonar-local-up" >/dev/null || true
+fi
+
+echo "==> Sonar scan"
+echo "    url=$SONARQUBE_URL"
+echo "    key=$PROJECT_KEY"
+echo "    workspace=$WORKSPACE"
+echo "    sources=$SOURCES"
+
+# Create project if missing (ignore errors)
+python3 - <<PY || true
+import os, urllib.parse, urllib.request, base64
+url = os.environ["SONARQUBE_URL"].rstrip("/")
+token = os.environ["SONARQUBE_TOKEN"]
+key = "${PROJECT_KEY}"
+auth = base64.b64encode(f"{token}:".encode()).decode()
+req = urllib.request.Request(
+    f"{url}/api/projects/create?" + urllib.parse.urlencode({"project": key, "name": key}),
+    method="POST",
+    headers={"Authorization": f"Basic {auth}"},
+)
+try:
+    urllib.request.urlopen(req, timeout=15).read()
+    print("    project created")
+except Exception as exc:
+    print(f"    project ensure: {exc}")
+PY
+
+docker pull sonarsource/sonar-scanner-cli:latest >/dev/null || true
+
+SCANNER_ARGS=(
+  -Dsonar.projectKey="$PROJECT_KEY"
+  -Dsonar.projectName="$PROJECT_KEY"
+  -Dsonar.sources="$SOURCES"
+  -Dsonar.tests=
+  -Dsonar.test.inclusions=
+  -Dsonar.sourceEncoding=UTF-8
+  -Dsonar.exclusions="**/bin/**,**/obj/**,**/node_modules/**,**/.git/**,**/__pycache__/**,**/.venv/**,**/tests/**,**/testing/**,**/fixtures/**"
+  -Dsonar.coverage.exclusions="**/*"
+  -Dsonar.coverageReportPaths=
+  -Dsonar.cfamily.compile-commands=
+  -Dsonar.scm.disabled=true
+)
+if [[ -n "$COMPILE_COMMANDS" ]]; then
+  SCANNER_ARGS+=(-Dsonar.cfamily.compile-commands="$COMPILE_COMMANDS")
+  echo "    cfamily compile-commands=$COMPILE_COMMANDS"
+fi
+
+docker run --rm --network=host \
+  -e SONAR_HOST_URL="$SONARQUBE_URL" \
+  -e SONAR_TOKEN="$SONARQUBE_TOKEN" \
+  -v "$WORKSPACE:/usr/src" \
+  -w /usr/src \
+  sonarsource/sonar-scanner-cli:latest \
+  "${SCANNER_ARGS[@]}"
+
+echo ""
+echo "==> Waiting for server to process analysis"
+python3 - <<PY
+import json, os, time, urllib.parse, urllib.request, base64
+url = os.environ["SONARQUBE_URL"].rstrip("/")
+token = os.environ["SONARQUBE_TOKEN"]
+key = "${PROJECT_KEY}"
+auth = base64.b64encode(f"{token}:".encode()).decode()
+
+def get(path: str):
+    req = urllib.request.Request(f"{url}{path}", headers={"Authorization": f"Basic {auth}"})
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        return json.loads(resp.read().decode())
+
+deadline = time.time() + 120
+status = "UNKNOWN"
+while time.time() < deadline:
+    tasks = get("/api/ce/activity?ps=1").get("tasks", [])
+    if tasks:
+        status = tasks[0].get("status", "UNKNOWN")
+        if status in ("SUCCESS", "FAILED", "CANCELED"):
+            break
+    time.sleep(2)
+print(f"    CE status: {status}")
+
+qs = urllib.parse.urlencode({
+    "componentKeys": key,
+    "ps": 50,
+    "resolved": "false",
+    "facets": "severities,types,rules",
+})
+data = get(f"/api/issues/search?{qs}")
+print(f"total issues: {data.get('total', 0)}")
+for issue in data.get("issues", [])[:25]:
+    comp = issue.get("component", "").split(":")[-1]
+    print(
+        f"  [{issue.get('severity')}/{issue.get('type')}] "
+        f"{comp}:{issue.get('line', '-')}  {issue.get('message', '')[:120]}  ({issue.get('rule')})"
+    )
+if data.get("total", 0) > 25:
+    print(f"  ... and {data['total'] - 25} more")
+print(f"\nUI: {url}/dashboard?id={urllib.parse.quote(key)}")
+print(f"Issues: {url}/project/issues?id={urllib.parse.quote(key)}&resolved=false")
+PY

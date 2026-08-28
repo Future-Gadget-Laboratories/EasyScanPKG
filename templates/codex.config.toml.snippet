@@ -1,0 +1,17 @@
+# SonarQube MCP for Codex CLI (stdio via Docker)
+# Merge into ~/.codex/config.toml
+# Tokens: set in the environment or a secret manager — do not commit them.
+
+[mcp_servers.sonarqube]
+command = "docker"
+args = [
+  "run", "--rm", "-i", "--init", "--pull=always",
+  "-e", "SONARQUBE_TOKEN",
+  "-e", "SONARQUBE_URL",
+  "-e", "SONARQUBE_ORG",
+  "-e", "SONARQUBE_PROJECT_KEY",
+  "-e", "SONARQUBE_IDE_PORT",
+  "-e", "SONARQUBE_TOOLSETS",
+  "sonarsource/sonarqube-mcp"
+]
+env = { "SONARQUBE_TOOLSETS" = "analysis,ide,issues,projects,quality-gates,rules,security-hotspots" }

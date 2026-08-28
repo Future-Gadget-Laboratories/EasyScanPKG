@@ -1,0 +1,92 @@
+#!/usr/bin/env python3
+"""Trigger IDE file analysis via embedded HTTP API (fail-open by policy)."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+import urllib.error
+import urllib.request
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _bootstrap import bootstrap
+
+bootstrap()
+
+from ide_port import find_ide_port  # noqa: E402
+from policy_db import resolve_store  # noqa: E402
+
+
+def analyze_files(port: int, paths: list[str]) -> tuple[bool, str]:
+    body = json.dumps({"fileAbsolutePaths": paths}).encode("utf-8")
+    url = f"http://127.0.0.1:{port}/sonarlint/api/analysis/files"
+    req = urllib.request.Request(
+        url,
+        data=body,
+        headers={
+            "Content-Type": "application/json",
+            "Origin": "ai-agent://sft-bridge",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=2) as response:
+            response.read()
+        return True, f"submitted {len(paths)} file(s) to IDE port {port}"
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        return False, str(exc)
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("paths", nargs="+", help="Absolute or relative file paths")
+    parser.add_argument("--workspace", default=os.getcwd())
+    parser.add_argument("--json", action="store_true")
+    args = parser.parse_args()
+
+    store = resolve_store()
+    prefs = store.merge_project_overlay(args.workspace)
+    hook = prefs.get("hook", {})
+    fail_open = bool(hook.get("fail_open", True))
+    scan = prefs.get("scan", {})
+    max_files = int(scan.get("max_files_per_analyze", 40))
+
+    abs_paths = [str(Path(p).resolve()) for p in args.paths][:max_files]
+    ide = find_ide_port()
+    if not ide:
+        msg = "SonarQube for IDE not detected; use MCP analyze_file_list when bridge is up"
+        store.record_event("analyze_skipped", {"reason": "no_ide", "files": len(abs_paths)})
+        payload = {"ok": fail_open, "analyzed": False, "message": msg, "files": abs_paths}
+        if args.json:
+            print(json.dumps(payload, indent=2))
+        else:
+            print(msg, file=sys.stderr)
+        return 0 if fail_open else 1
+
+    store.upsert_workspace(args.workspace, last_ide_port=ide.port)
+    ok, message = analyze_files(ide.port, abs_paths)
+    store.record_event(
+        "analyze",
+        {"ok": ok, "port": ide.port, "files": len(abs_paths), "message": message},
+    )
+    payload = {
+        "ok": ok or fail_open,
+        "analyzed": ok,
+        "message": message,
+        "port": ide.port,
+        "files": abs_paths,
+    }
+    if args.json:
+        print(json.dumps(payload, indent=2))
+    else:
+        print(message)
+    if ok:
+        return 0
+    return 0 if fail_open else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
