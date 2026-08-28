@@ -20,9 +20,9 @@ DESKTOP_SHORTCUT=1
 SKIP_REMOTE_CREDS=0
 SKIP_CHECK=0
 
-# Example path only if present (not required)
+# Optional example workspace (set EASYSCAN_EXAMPLE_WS); otherwise $PWD
 DEFAULT_CB=""
-EXAMPLE_WS="$HOME/Desktop/IS-P2QR/CB/CipherBank-src"
+EXAMPLE_WS="${EASYSCAN_EXAMPLE_WS:-}"
 
 usage() {
   cat <<EOF

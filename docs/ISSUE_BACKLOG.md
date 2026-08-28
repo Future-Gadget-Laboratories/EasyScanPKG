@@ -22,7 +22,7 @@ Gate before GitHub: `./bin/easyscan-check --offline` and unit tests pass.
 ## Track B — CipherBank Sonar findings (15)
 
 **Scope:** `make/make-module/modulebuilder/mm` (and `features/`)  
-**Project key (local example):** `local-CB-st_CipherBank-src_d25eb365-b11f-4144-9d9c-03aa1434d528`
+**Project key (local example):** `local-<your-cipherbank-dirname>`
 
 Re-verify:
 

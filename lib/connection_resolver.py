@@ -113,7 +113,7 @@ def resolve_connection(
         else:
             creds = prompt_credentials(
                 reason="SonarQube URL and user token are required for connected analysis.",
-                url_default=url or "https://sonar.cipherbank.money",
+                url_default=url or "http://127.0.0.1:9000",
                 prefer_cli=prefer_cli,
             )
         prompted = True

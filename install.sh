@@ -17,8 +17,8 @@ INSTALL_COMPOSE=0
 SKIP_CHECK=0
 CHECK_ONLY=0
 
-# Example only — never required
-EXAMPLE_WS="$HOME/Desktop/IS-P2QR/CB/CipherBank-src"
+# Optional example workspace (set EASYSCAN_EXAMPLE_WS); otherwise $PWD
+EXAMPLE_WS="${EASYSCAN_EXAMPLE_WS:-}"
 
 usage() {
   cat <<EOF

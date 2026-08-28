@@ -18,9 +18,9 @@ chmod 600 "$HOME/.config/sft/bridge.env"
 source "$HOME/.config/sft/bridge.env"
 
 DESKTOP_ENV="$HOME/.config/sft/desktop.env"
-# Example default only if present; otherwise use $PWD (not required)
+# Optional example workspace (set EASYSCAN_EXAMPLE_WS); otherwise $PWD
 DEFAULT_WS=""
-EXAMPLE_WS="$HOME/Desktop/IS-P2QR/CB/CipherBank-src"
+EXAMPLE_WS="${EASYSCAN_EXAMPLE_WS:-}"
 WORKSPACE=""
 OPEN_CURSOR=1
 NO_PROMPT=1

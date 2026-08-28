@@ -9,18 +9,17 @@ export BRIDGE="$ROOT"
 export SFT_AGENT_BRIDGE="$ROOT"
 
 WORKSPACE=""
-SOURCES="make/make-module/modulebuilder/mm"
+SOURCES="."
 PROJECT_KEY=""
 COMPILE_COMMANDS=""
-DEFAULT_WS=""
-EXAMPLE_WS="$HOME/Desktop/IS-P2QR/CB/CipherBank-src"
+EXAMPLE_WS="${EASYSCAN_EXAMPLE_WS:-}"
 
 usage() {
   cat <<EOF
 Usage: $(basename "$0") [options]
 
   --workspace PATH            Project root to scan (default: desktop.env / \$PWD)
-  --sources CSV               Relative source dirs (default: make/make-module/modulebuilder/mm)
+  --sources CSV               Relative source dirs (default: .)
   --project-key KEY           Override project key (default: from sonar-local.env)
   --compile-commands PATH     Relative path to compile_commands.json (CFamily Compilation DB mode)
 
