@@ -49,6 +49,10 @@ EasyScanPKG/bin/sonar-issues --local list
 
 DoD: `sonar-issues --local list` shows **0 CRITICAL** on this tree after CipherBank PRs.
 
+**Status (2026-08-28):** All 15 findings remediated in CipherBank-src (`modulebuilder/mm`);
+verified with a clean local project key (`local-easyscan-mm-verify*`) showing **0 open issues**.
+Original local project key also shows **0 CRITICAL** after re-scan.
+
 ## Example agent workflow
 
 1. `sonar-local-up` / EasyScan desktop
