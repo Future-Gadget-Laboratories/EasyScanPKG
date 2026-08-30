@@ -76,9 +76,13 @@ Register each GitHub/Sonar target as a **named context** (URL + token file ref +
 
 ## Skills (auto-installed)
 
+- `easyscan-bootstrap` — activate Sonar in any agent environment
+- `sonar-fix-queue` — find `.sft/issue-checklist.md` and fix until empty
 - `sonar-local-ops` — local projects, scan, issues
 - `sonar-mcp-lifecycle` — MCP up/down, credentials
 - `sonar-agent-analysis` — end-of-task analyze via IDE/MCP
+
+See [docs/AGENT_SONAR_PLAYBOOK.md](docs/AGENT_SONAR_PLAYBOOK.md) and [docs/FIX_QUEUE.md](docs/FIX_QUEUE.md).
 
 ## Language support (local Community)
 

@@ -156,5 +156,7 @@ Prefer **code fixes**. Use `falsepositive` / `wontfix` / `accept` only with rati
 
 ## Related skills
 
+- `easyscan-bootstrap` — activate Sonar / contexts in any agent environment
+- `sonar-fix-queue` — checklist location + fix-until-empty loop
 - `sonar-mcp-lifecycle` — MCP up/down, credentials, policy DB
 - `sonar-agent-analysis` — end-of-task analyze via IDE/MCP

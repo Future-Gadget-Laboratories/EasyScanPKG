@@ -13,6 +13,8 @@ from pathlib import Path
 
 
 REQUIRED_SKILLS = (
+    "easyscan-bootstrap",
+    "sonar-fix-queue",
     "sonar-local-ops",
     "sonar-mcp-lifecycle",
     "sonar-agent-analysis",
