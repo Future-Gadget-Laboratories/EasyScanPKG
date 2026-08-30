@@ -42,11 +42,22 @@ chmod +x commission.sh install.sh bin/*
 UI: http://127.0.0.1:9000  
 Token file (never print): `~/.config/sft/sonar-local.env`
 
+### If the local token is missing / rejected
+
+```bash
+"$BRIDGE/bin/sonar-credentials" --paths                  # where tokens live
+"$BRIDGE/bin/sonar-credentials" --local --bootstrap --test
+# or paste a UI-generated token:
+"$BRIDGE/bin/sonar-credentials" --local --cli --test
+set -a; . ~/.config/sft/sonar-local.env; set +a
+```
+
 ## 2. Named context (multi-project)
 
 ```bash
 "$BRIDGE/bin/sonar-context" create <name> \
   --url http://127.0.0.1:9000 \
+  --token-ref ~/.config/sft/sonar-local.env \
   --project-key local-<repo> \
   --gh <org>/<repo> \
   --remediation "$BRIDGE/templates/remediation.easyscanpkg.json" \

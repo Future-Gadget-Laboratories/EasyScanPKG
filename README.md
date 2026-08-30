@@ -45,7 +45,8 @@ Daily: click **EasyScan** on the panel, or run `bin/sonar-desktop`.
 | Export issue checklist | `./bin/sonar-issues export --workspace "$PWD" --refresh` |
 | Quality profile XML | `./bin/sonar-profile import FILE.xml --local --bind-project KEY` |
 | Language probe | `./bin/sonar-languages --local` |
-| Credentials | `./bin/sonar-credentials --cli --test` |
+| Credentials (remote) | `./bin/sonar-credentials --cli --test` |
+| Credentials (local) | `./bin/sonar-credentials --local --bootstrap --test` |
 
 ### Multi-project contexts
 

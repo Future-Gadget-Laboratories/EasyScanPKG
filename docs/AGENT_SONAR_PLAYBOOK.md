@@ -37,6 +37,33 @@ Skills installed:
 "$BRIDGE/bin/easyscan-check" --require-local
 ```
 
+## Local access token for agent skills
+
+Agents need `SONARQUBE_TOKEN` in `~/.config/sft/sonar-local.env` (never print it).
+
+```bash
+# Preferred — mint from local Docker Sonar
+"$BRIDGE/bin/sonar-credentials" --local --bootstrap --test
+
+# Or paste a token from the local UI (My Account → Security)
+"$BRIDGE/bin/sonar-credentials" --local --cli --test
+
+# Inspect paths only (safe in chat)
+"$BRIDGE/bin/sonar-credentials" --paths --json
+
+# Load into this shell without echoing
+set -a; . ~/.config/sft/sonar-local.env; set +a
+
+# Bind a context to the token *file* (stores a ref, not the secret)
+"$BRIDGE/bin/sonar-context" create local \
+  --url http://127.0.0.1:9000 \
+  --token-ref ~/.config/sft/sonar-local.env \
+  --project-key local-<repo> --use
+```
+
+Skill **`sonar-local-ops`** has the full local-token cookbook; **`sonar-mcp-lifecycle`**
+covers remote vs local credential CLIs.
+
 ## Find things to fix
 
 ```bash
@@ -60,7 +87,7 @@ Follow skill **`sonar-fix-queue`**: code fixes → re-scan → `export --refresh
 ## Remote Sonar instead of local
 
 ```bash
-"$BRIDGE/bin/sonar-credentials" --cli   # writes ~/.config/sft/sonar.env
+"$BRIDGE/bin/sonar-credentials" --cli --test   # writes ~/.config/sft/sonar.env
 "$BRIDGE/bin/sonar-context" create remote-prod \
   --url https://sonar.example.com --token-ref ~/.config/sft/sonar.env \
   --project-key my.project --use

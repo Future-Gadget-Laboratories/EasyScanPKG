@@ -49,12 +49,26 @@ Skip prompts in CI: `--no-prompt`. Skip local fallback: `--no-local-fallback`.
 ## Credentials
 
 ```bash
-"$BRIDGE/bin/sonar-credentials" --test    # dialog + validate
-"$BRIDGE/bin/sonar-local-up"              # local server only
+# Remote → ~/.config/sft/sonar.env
+"$BRIDGE/bin/sonar-credentials" --cli --test
+
+# Local agent token → ~/.config/sft/sonar-local.env
+"$BRIDGE/bin/sonar-credentials" --local --bootstrap --test   # auto-mint
+"$BRIDGE/bin/sonar-credentials" --local --cli --test         # paste existing
+"$BRIDGE/bin/sonar-credentials" --paths                      # paths only (no secrets)
+
+"$BRIDGE/bin/sonar-local-up"     # local server + bootstrap token
 "$BRIDGE/bin/sonar-local-down"
 ```
 
+| Flag | Writes | Use when |
+| --- | --- | --- |
+| (default) | `sonar.env` | Remote / SonarCloud URL + user token |
+| `--local` | `sonar-local.env` | Agent skills + local Docker Sonar |
+| `--local --bootstrap` | `sonar-local.env` | Mint token from local Sonar API |
+
 Never commit tokens. Policy DB stores URLs/prefs only — tokens live in env files (`chmod 600`).
+After saving, MCP/Codex env blocks are refreshed automatically.
 
 ## Client config
 

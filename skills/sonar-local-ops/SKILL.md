@@ -46,12 +46,57 @@ set +a
 
 First boot can take several minutes. UI: http://127.0.0.1:9000
 
-## 2. Token for API / scanner / MCP
+## 2. Access token for API / scanner / MCP / agent skills
 
-After `sonar-local-up`, the user token is in `sonar-local.env` as `SONARQUBE_TOKEN`.
+Local agent tokens live in `~/.config/sft/sonar-local.env` as `SONARQUBE_TOKEN`
+(`chmod 600`). **Never print the token value into chat** — refer to the path only.
+
+### Preferred: auto-mint from local Sonar
 
 ```bash
+"$BRIDGE/bin/sonar-local-up"   # starts Docker Sonar + bootstraps token
+# or explicitly:
+"$BRIDGE/bin/sonar-credentials" --local --bootstrap --test --project-key local-my-app
+"$BRIDGE/bin/sonar-credentials" --paths   # show env file paths (no secrets)
+```
+
+`--local --bootstrap` starts local Sonar if needed, generates a user token via
+the API, writes `sonar-local.env`, and refreshes Cursor/Codex MCP env.
+
+### Paste an existing local user token
+
+Create a token in the local UI (**My Account → Security → Generate Tokens**)
+or via API, then:
+
+```bash
+"$BRIDGE/bin/sonar-credentials" --local --cli --test
+# or non-interactive:
+"$BRIDGE/bin/sonar-credentials" --local \
+  --url http://127.0.0.1:9000 \
+  --token "$SONARQUBE_TOKEN" \
+  --project-key local-my-app \
+  --test
+```
+
+### Load into the current agent shell (without echoing)
+
+```bash
+set -a
+[ -f ~/.config/sft/sonar-local.env ] && . ~/.config/sft/sonar-local.env
+set +a
+# Confirm presence only:
+"$BRIDGE/bin/sonar-credentials" --paths --json
 "$BRIDGE/bin/sonar-mcp-status" --workspace "$PWD" --json
+```
+
+Point a named context at the local token file (stores a **ref**, not the secret):
+
+```bash
+"$BRIDGE/bin/sonar-context" create local \
+  --url http://127.0.0.1:9000 \
+  --token-ref ~/.config/sft/sonar-local.env \
+  --project-key local-my-app \
+  --use
 ```
 
 MCP Cursor config must use `--network=host` so Docker can reach host Sonar
