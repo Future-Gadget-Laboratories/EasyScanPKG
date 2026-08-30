@@ -30,9 +30,15 @@ class IdePortTests(unittest.TestCase):
         self.assertIn("64120", diag.detail)
 
     def test_extension_installed_detects_cursor_list(self) -> None:
-        with patch(
-            "ide_port.subprocess.run",
-            return_value=type("R", (), {"returncode": 0, "stdout": "SonarSource.sonarlint-vscode\n"})(),
+        with (
+            patch("ide_port.IDE_EXTENSION_DIRS", []),
+            patch("ide_port.shutil.which", return_value="/usr/bin/cursor"),
+            patch(
+                "ide_port.subprocess.run",
+                return_value=type(
+                    "R", (), {"returncode": 0, "stdout": "SonarSource.sonarlint-vscode\n"}
+                )(),
+            ),
         ):
             self.assertTrue(extension_installed())
 
