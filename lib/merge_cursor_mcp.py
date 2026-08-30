@@ -29,9 +29,13 @@ def merge_mcp_config(bridge: Path | None = None) -> Path:
         else:
             env.pop(key, None)
     # Drop any leftover template placeholders
-    for key, val in list(env.items()):
-        if isinstance(val, str) and val.startswith("${") and val.endswith("}"):
-            del env[key]
+    stale_keys = [
+        key
+        for key, val in env.items()
+        if isinstance(val, str) and val.startswith("${") and val.endswith("}")
+    ]
+    for key in stale_keys:
+        del env[key]
     mcp_path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
     return mcp_path
 

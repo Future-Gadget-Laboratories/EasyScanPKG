@@ -91,6 +91,7 @@ def ensure_up(
 
     docker = _docker()
     assert docker is not None
+    pass_keys = _prepare_mcp_env(ide_port=ide_port, tool=tool)
 
     cmd = [
         docker,
@@ -101,33 +102,11 @@ def ensure_up(
         prefs.mcp_container_name,
         "--init",
     ]
-    # Pass through env vars by name so secrets aren't on argv
-    pass_keys = [
-        "SONARQUBE_TOKEN",
-        "SONARQUBE_URL",
-        "SONARQUBE_ORG",
-        "SONARQUBE_PROJECT_KEY",
-        "SONARQUBE_TOOLSETS",
-        "SONARQUBE_READ_ONLY",
-        "SONARQUBE_IDE_PORT",
-    ]
-    if ide_port is not None:
-        os.environ["SONARQUBE_IDE_PORT"] = str(ide_port)
-    if tool.get("toolsets") and not os.environ.get("SONARQUBE_TOOLSETS"):
-        os.environ["SONARQUBE_TOOLSETS"] = str(tool["toolsets"])
-    if tool.get("read_only") and not os.environ.get("SONARQUBE_READ_ONLY"):
-        os.environ["SONARQUBE_READ_ONLY"] = "true" if tool["read_only"] else "false"
-
     for key in pass_keys:
         if os.environ.get(key):
             cmd.extend(["-e", key])
-
-    # Note: detached helper container is for diagnostics; MCP protocol needs stdio
-    # for Cursor/Codex. We still record spin-up for policy continuity.
     cmd.append(prefs.mcp_image)
 
-    # Detached container without -i won't speak MCP; use a marker container that
-    # simply keeps the image warm / documents intent. Prefer pulling + recording.
     pull = run_docker(["pull", prefs.mcp_image])
     store.record_event(
         "mcp_image_pull",
@@ -140,10 +119,7 @@ def ensure_up(
         },
     )
 
-    # For on-demand "up", create a tiny always-on placeholder only if user explicitly
-    # wants docker helper; default is pull + write client configs readiness.
     if detach:
-        # Avoid leaving a broken non-stdio MCP container running by default.
         store.set_connection_prefs(
             last_url=os.environ.get("SONARQUBE_URL") or prefs.last_url,
             last_org=os.environ.get("SONARQUBE_ORG") or prefs.last_org,
@@ -160,6 +136,27 @@ def ensure_up(
         },
     )
     return status(store)
+
+
+def _prepare_mcp_env(*, ide_port: int | None, tool: dict) -> list[str]:
+    import os
+
+    pass_keys = [
+        "SONARQUBE_TOKEN",
+        "SONARQUBE_URL",
+        "SONARQUBE_ORG",
+        "SONARQUBE_PROJECT_KEY",
+        "SONARQUBE_TOOLSETS",
+        "SONARQUBE_READ_ONLY",
+        "SONARQUBE_IDE_PORT",
+    ]
+    if ide_port is not None:
+        os.environ["SONARQUBE_IDE_PORT"] = str(ide_port)
+    if tool.get("toolsets") and not os.environ.get("SONARQUBE_TOOLSETS"):
+        os.environ["SONARQUBE_TOOLSETS"] = str(tool["toolsets"])
+    if tool.get("read_only") and not os.environ.get("SONARQUBE_READ_ONLY"):
+        os.environ["SONARQUBE_READ_ONLY"] = "true" if tool["read_only"] else "false"
+    return pass_keys
 
 
 def ensure_down(store: PolicyStore | None = None) -> McpStatus:

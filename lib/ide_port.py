@@ -45,6 +45,12 @@ class IdeDiagnosis:
 
 
 def extension_installed() -> bool:
+    if _extension_on_disk():
+        return True
+    return _extension_via_cursor_cli()
+
+
+def _extension_on_disk() -> bool:
     for root in IDE_EXTENSION_DIRS:
         if not root.is_dir():
             continue
@@ -52,23 +58,26 @@ def extension_installed() -> bool:
             name = entry.name.lower()
             if IDE_EXTENSION_ID in name or name.startswith("sonarsource.sonarlint-vscode-"):
                 return True
-    cursor = shutil.which("cursor")
-    if cursor:
-        try:
-            result = subprocess.run(
-                [cursor, "--list-extensions"],
-                capture_output=True,
-                text=True,
-                check=False,
-                timeout=10,
-            )
-            if result.returncode == 0:
-                for line in result.stdout.splitlines():
-                    if line.strip().lower() == IDE_EXTENSION_ID:
-                        return True
-        except (OSError, subprocess.TimeoutExpired):
-            pass
     return False
+
+
+def _extension_via_cursor_cli() -> bool:
+    cursor = shutil.which("cursor")
+    if not cursor:
+        return False
+    try:
+        result = subprocess.run(
+            [cursor, "--list-extensions"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    if result.returncode != 0:
+        return False
+    return any(line.strip().lower() == IDE_EXTENSION_ID for line in result.stdout.splitlines())
 
 
 def _port_from_logs() -> int | None:
@@ -96,14 +105,15 @@ def _port_from_logs() -> int | None:
 
 def check_port(port: int, expected_ide: str | None = None) -> IdeStatus | None:
     for host in ("127.0.0.1", "localhost"):
-        url = f"http://{host}:{port}/sonarlint/api/status"
+        # SonarLint IDE bridge listens on loopback HTTP only (no TLS endpoint).
+        url = f"http://{host}:{port}/sonarlint/api/status"  # NOSONAR python:S5332
         req = urllib.request.Request(url, headers={"Origin": "ai-agent://sft-bridge"})
         try:
             with urllib.request.urlopen(req, timeout=TIMEOUT_S) as response:
                 if response.status != 200:
                     continue
                 data = json.loads(response.read().decode("utf-8"))
-        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, OSError):
+        except (OSError, json.JSONDecodeError):
             continue
         ide_name = data.get("ideName") or data.get("ide_name")
         if expected_ide and ide_name and ide_name != expected_ide:

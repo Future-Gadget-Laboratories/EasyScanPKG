@@ -38,7 +38,7 @@ def probe_language_support(url: str, token: str | None = None) -> LanguageSuppor
         with urllib.request.urlopen(req, timeout=10) as resp:
             data = json.loads(resp.read().decode("utf-8"))
             languages = [x.get("key", "") for x in data.get("languages", [])]
-    except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError):
+    except (OSError, json.JSONDecodeError):
         languages = []
 
     keys = set(languages)
@@ -54,7 +54,7 @@ def probe_language_support(url: str, token: str | None = None) -> LanguageSuppor
     try:
         with urllib.request.urlopen(bw, timeout=5) as resp:
             bw_ok = resp.status == 200
-    except (urllib.error.URLError, TimeoutError, OSError):
+    except OSError:
         bw_ok = False
 
     notes: list[str] = []

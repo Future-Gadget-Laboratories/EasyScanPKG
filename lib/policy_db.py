@@ -17,6 +17,7 @@ from typing import Any, Mapping
 
 DEFAULT_CONFIG_DIR = Path.home() / ".config" / "sft" / "sonar-policy"
 SCHEMA_VERSION = 2
+_SQL_WORKSPACE_BY_PATH = "SELECT * FROM workspaces WHERE path = ?"
 
 DEFAULT_SCAN_PREFS: dict[str, Any] = {
     "include_globs": ["**/*"],
@@ -56,6 +57,14 @@ DEFAULT_TOOL_PREFS: dict[str, Any] = {
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+
+
+def _keep_or_set(existing: Any, new: Any, *, clear: bool = False) -> Any:
+    if clear:
+        return None
+    if new is not None:
+        return new
+    return existing
 
 
 @dataclass
@@ -273,18 +282,17 @@ class PolicyStore:
         clear_org: bool = False,
     ) -> ConnectionPrefs:
         current = self.get_connection_prefs()
+        next_prefer = current.prefer_connected if prefer_connected is None else prefer_connected
+        next_image = current.mcp_image if mcp_image is None else mcp_image
+        next_container = (
+            current.mcp_container_name if mcp_container_name is None else mcp_container_name
+        )
         next_prefs = ConnectionPrefs(
-            prefer_connected=(
-                current.prefer_connected if prefer_connected is None else prefer_connected
-            ),
-            last_url=None if clear_url else (current.last_url if last_url is None else last_url),
-            last_org=None if clear_org else (current.last_org if last_org is None else last_org),
-            mcp_image=current.mcp_image if mcp_image is None else mcp_image,
-            mcp_container_name=(
-                current.mcp_container_name
-                if mcp_container_name is None
-                else mcp_container_name
-            ),
+            prefer_connected=next_prefer,
+            last_url=_keep_or_set(current.last_url, last_url, clear=clear_url),
+            last_org=_keep_or_set(current.last_org, last_org, clear=clear_org),
+            mcp_image=next_image,
+            mcp_container_name=next_container,
         )
         with self._connect() as conn:
             conn.execute(
@@ -342,9 +350,7 @@ class PolicyStore:
     ) -> dict[str, Any]:
         workspace = str(Path(path).resolve())
         with self._connect() as conn:
-            existing = conn.execute(
-                "SELECT * FROM workspaces WHERE path = ?", (workspace,)
-            ).fetchone()
+            existing = conn.execute(_SQL_WORKSPACE_BY_PATH, (workspace,)).fetchone()
             if existing is None:
                 conn.execute(
                     """
@@ -365,9 +371,7 @@ class PolicyStore:
                     """,
                     (project_key, last_ide_port, context_name, _utc_now(), workspace),
                 )
-            row = conn.execute(
-                "SELECT * FROM workspaces WHERE path = ?", (workspace,)
-            ).fetchone()
+            row = conn.execute(_SQL_WORKSPACE_BY_PATH, (workspace,)).fetchone()
         self.export_preferences()
         assert row is not None
         return dict(row)
@@ -375,9 +379,7 @@ class PolicyStore:
     def get_workspace(self, path: str | Path) -> dict[str, Any] | None:
         workspace = str(Path(path).resolve())
         with self._connect() as conn:
-            row = conn.execute(
-                "SELECT * FROM workspaces WHERE path = ?", (workspace,)
-            ).fetchone()
+            row = conn.execute(_SQL_WORKSPACE_BY_PATH, (workspace,)).fetchone()
         return dict(row) if row else None
 
     @staticmethod
@@ -427,6 +429,21 @@ class PolicyStore:
         active = domain.get("active_context")
         return str(active) if active else None
 
+    @staticmethod
+    def _validate_context_name(name: str) -> str:
+        name = name.strip()
+        if not name or any(c in name for c in "/\\ \t\n"):
+            raise ValueError("context name must be a non-empty token without spaces/slashes")
+        return name
+
+    @staticmethod
+    def _context_active_flag(activate: bool, existing: AnalysisContext | None) -> int:
+        if activate:
+            return 1
+        if existing and existing.active:
+            return 1
+        return 0
+
     def upsert_context(
         self,
         name: str,
@@ -443,42 +460,26 @@ class PolicyStore:
         clear_project_key: bool = False,
         clear_remediation: bool = False,
     ) -> AnalysisContext:
-        name = name.strip()
-        if not name or any(c in name for c in "/\\ \t\n"):
-            raise ValueError("context name must be a non-empty token without spaces/slashes")
+        name = self._validate_context_name(name)
         existing = self.get_context(name)
-        next_tags = tags if tags is not None else (existing.tags if existing else [])
-        next_url = url if url is not None else (existing.url if existing else None)
-        next_token = token_ref if token_ref is not None else (existing.token_ref if existing else None)
-        next_org = None if clear_org else (org if org is not None else (existing.org if existing else None))
-        next_pk = (
-            None
-            if clear_project_key
-            else (
-                project_key
-                if project_key is not None
-                else (existing.project_key if existing else None)
-            )
-        )
-        next_rem = (
-            None
-            if clear_remediation
-            else (
-                remediation_path
-                if remediation_path is not None
-                else (existing.remediation_path if existing else None)
-            )
-        )
-        next_vol = (
-            volume_namespace
-            if volume_namespace is not None
-            else (existing.volume_namespace if existing else None)
+        fields = self._next_context_fields(
+            existing,
+            url=url,
+            token_ref=token_ref,
+            org=org,
+            project_key=project_key,
+            tags=tags,
+            remediation_path=remediation_path,
+            volume_namespace=volume_namespace,
+            clear_org=clear_org,
+            clear_project_key=clear_project_key,
+            clear_remediation=clear_remediation,
         )
         now = _utc_now()
+        active_flag = self._context_active_flag(activate, existing)
         with self._connect() as conn:
             if activate:
                 conn.execute("UPDATE contexts SET active = 0")
-            active_flag = 1 if activate else (1 if existing and existing.active else 0)
             conn.execute(
                 """
                 INSERT INTO contexts(
@@ -496,18 +497,7 @@ class PolicyStore:
                   active = excluded.active,
                   updated_at = excluded.updated_at
                 """,
-                (
-                    name,
-                    next_url,
-                    next_token,
-                    next_org,
-                    next_pk,
-                    json.dumps(list(next_tags or [])),
-                    next_rem,
-                    next_vol,
-                    active_flag,
-                    now,
-                ),
+                (name, *fields, active_flag, now),
             )
         if activate:
             self.set_pref("connection", "active_context", name)
@@ -515,6 +505,47 @@ class PolicyStore:
         ctx = self.get_context(name)
         assert ctx is not None
         return ctx
+
+    @staticmethod
+    def _existing_attr(existing: AnalysisContext | None, attr: str) -> Any:
+        return getattr(existing, attr) if existing else None
+
+    @staticmethod
+    def _next_context_fields(
+        existing: AnalysisContext | None,
+        *,
+        url: str | None,
+        token_ref: str | None,
+        org: str | None,
+        project_key: str | None,
+        tags: list[str] | None,
+        remediation_path: str | None,
+        volume_namespace: str | None,
+        clear_org: bool,
+        clear_project_key: bool,
+        clear_remediation: bool,
+    ) -> tuple:
+        if tags is not None:
+            next_tags = tags
+        else:
+            next_tags = existing.tags if existing else []
+        return (
+            _keep_or_set(PolicyStore._existing_attr(existing, "url"), url),
+            _keep_or_set(PolicyStore._existing_attr(existing, "token_ref"), token_ref),
+            _keep_or_set(PolicyStore._existing_attr(existing, "org"), org, clear=clear_org),
+            _keep_or_set(
+                PolicyStore._existing_attr(existing, "project_key"),
+                project_key,
+                clear=clear_project_key,
+            ),
+            json.dumps(list(next_tags or [])),
+            _keep_or_set(
+                PolicyStore._existing_attr(existing, "remediation_path"),
+                remediation_path,
+                clear=clear_remediation,
+            ),
+            _keep_or_set(PolicyStore._existing_attr(existing, "volume_namespace"), volume_namespace),
+        )
 
     def use_context(self, name: str) -> AnalysisContext:
         ctx = self.get_context(name)
@@ -696,26 +727,25 @@ class PolicyStore:
             overlay = json.loads(overlay_path.read_text(encoding="utf-8"))
         except json.JSONDecodeError:
             return base
+        base = self._apply_overlay_domains(base, overlay)
+        if overlay.get("project_key"):
+            self.upsert_workspace(workspace, project_key=str(overlay["project_key"]))
+            if self.get_workspace(workspace):
+                base = self._apply_overlay_domains(self.snapshot(), overlay)
+        return base
+
+    @staticmethod
+    def _apply_overlay_domains(base: dict[str, Any], overlay: Mapping[str, Any]) -> dict[str, Any]:
         for domain in ("scan", "agent", "hook", "tool"):
             if isinstance(overlay.get(domain), dict):
                 base[domain] = {**base.get(domain, {}), **overlay[domain]}
         if isinstance(overlay.get("connection"), dict):
-            # Never accept tokens from overlay files either
             cleaned = {
                 k: v
                 for k, v in overlay["connection"].items()
                 if "token" not in k.lower()
             }
             base["connection"] = {**base["connection"], **cleaned}
-        if overlay.get("project_key"):
-            self.upsert_workspace(workspace, project_key=str(overlay["project_key"]))
-            ws = self.get_workspace(workspace)
-            if ws:
-                # refresh workspaces list in snapshot
-                base = self.snapshot()
-                for domain in ("scan", "agent", "hook", "tool"):
-                    if isinstance(overlay.get(domain), dict):
-                        base[domain] = {**base.get(domain, {}), **overlay[domain]}
         return base
 
 

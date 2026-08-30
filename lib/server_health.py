@@ -67,7 +67,7 @@ def check_server(url: str, token: str | None, *, timeout: float = 5.0) -> Health
         return HealthResult(
             AuthStatus.UNREACHABLE, base, f"HTTP {exc.code}: {exc.reason}", exc.code
         )
-    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+    except OSError as exc:
         return HealthResult(AuthStatus.UNREACHABLE, base, str(exc))
 
 
@@ -82,7 +82,7 @@ def wait_for_system_up(url: str, *, timeout_s: float = 180.0, poll_s: float = 3.
                 data = json.loads(resp.read().decode("utf-8"))
                 if data.get("status") == "UP":
                     return True
-        except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError):
+        except (OSError, json.JSONDecodeError):
             pass
         time.sleep(poll_s)
     return False

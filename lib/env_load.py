@@ -6,10 +6,13 @@ import os
 from pathlib import Path
 
 
+_CONFIG_DIRNAME = ".config"
+_SFT_DIRNAME = "sft"
+
 DEFAULT_ENV_FILES = (
-    Path.home() / ".config" / "sft" / "sonar.env",
-    Path.home() / ".config" / "sft" / "sonar-local.env",
-    Path.home() / ".config" / "sft" / "sonar-policy" / "sonar.env",
+    Path.home() / _CONFIG_DIRNAME / _SFT_DIRNAME / "sonar.env",
+    Path.home() / _CONFIG_DIRNAME / _SFT_DIRNAME / "sonar-local.env",
+    Path.home() / _CONFIG_DIRNAME / _SFT_DIRNAME / "sonar-policy" / "sonar.env",
 )
 
 

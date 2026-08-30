@@ -134,18 +134,10 @@ def check_images(report: CheckReport, *, offline: bool, pull: bool) -> None:
 def check_executables(report: CheckReport, root: Path) -> None:
     bad: list[str] = []
     for name in REQUIRED_BIN:
-        path = root / "bin" / name
-        if name.endswith(".sh") and not path.is_file():
-            # install-skills lives in bin/
-            pass
-        if not path.is_file():
-            # also allow root scripts
-            alt = root / name
-            if alt.is_file():
-                path = alt
-            else:
-                bad.append(name)
-                continue
+        path = _resolve_script(root, name)
+        if path is None:
+            bad.append(name)
+            continue
         if not os.access(path, os.X_OK):
             bad.append(f"{name}(not executable)")
     for name in ("commission.sh", "install.sh"):
@@ -158,6 +150,14 @@ def check_executables(report: CheckReport, root: Path) -> None:
         report.add(CheckItem("executables", False, "hard", "missing/not executable: " + ", ".join(bad)))
     else:
         report.add(CheckItem("executables", True, "hard", "bridge scripts present"))
+
+
+def _resolve_script(root: Path, name: str) -> Path | None:
+    path = root / "bin" / name
+    if path.is_file():
+        return path
+    alt = root / name
+    return alt if alt.is_file() else None
 
 
 def check_skills(report: CheckReport, *, offline: bool = False) -> None:
@@ -231,7 +231,7 @@ def check_local_server(report: CheckReport, *, require_local: bool) -> None:
                     f"status={data.get('status')}" if up else "not UP",
                 )
             )
-    except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError) as exc:
+    except (OSError, json.JSONDecodeError) as exc:
         report.add(
             CheckItem(
                 "local_server",

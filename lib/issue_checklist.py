@@ -112,21 +112,22 @@ def render_markdown(payload: Mapping[str, Any]) -> str:
         lines.append("")
         return "\n".join(lines)
 
-    for item in issues:
-        key = item.get("key") or "?"
-        sev = item.get("severity") or "?"
-        typ = item.get("type") or "?"
-        rule = item.get("rule") or "?"
-        path = item.get("file") or "?"
-        line = item.get("line") or "-"
-        msg = (item.get("message") or "").replace("\n", " ").strip()
-        url = item.get("url") or ""
-        lines.append(
-            f"- [ ] `{key}` **{sev}/{typ}** `{path}:{line}` — {msg} ({rule})"
-            + (f"  [open]({url})" if url else "")
-        )
+    lines.extend(_format_issue_line(item) for item in issues)
     lines.append("")
     return "\n".join(lines)
+
+
+def _format_issue_line(item: Mapping[str, Any]) -> str:
+    key = item.get("key") or "?"
+    sev = item.get("severity") or "?"
+    typ = item.get("type") or "?"
+    rule = item.get("rule") or "?"
+    path = item.get("file") or "?"
+    line = item.get("line") or "-"
+    msg = (item.get("message") or "").replace("\n", " ").strip()
+    url = item.get("url") or ""
+    link = f"  [open]({url})" if url else ""
+    return f"- [ ] `{key}` **{sev}/{typ}** `{path}:{line}` — {msg} ({rule}){link}"
 
 
 def write_checklist(

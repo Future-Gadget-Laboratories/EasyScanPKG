@@ -11,6 +11,8 @@ from env_write import CONFIG_DIR, LOCAL_ENV, REMOTE_ENV, read_env_file
 from local_server import DEFAULT_LOCAL_URL, ensure_token, is_running, start
 from policy_db import AnalysisContext, PolicyStore, resolve_store
 
+LOCALHOST_PREFIXES = ("http://127.0.0.1", "http://localhost")
+
 
 @dataclass
 class ResolvedCreds:
@@ -22,19 +24,20 @@ class ResolvedCreds:
     prefer_local: bool = False
 
 
+def _is_local_url(url: str) -> bool:
+    return url.startswith(LOCALHOST_PREFIXES)
+
+
 def _token_from_ref(token_ref: str | None) -> str | None:
     if not token_ref:
         return None
-    # env:VAR → read from environment
     if token_ref.startswith("env:"):
         return os.environ.get(token_ref[4:]) or None
     path = Path(token_ref).expanduser()
     if not path.is_file():
         return None
-    # If the ref is an env file, prefer SONARQUBE_TOKEN; else treat as raw token file.
     if path.suffix == ".env" or path.name.endswith(".env"):
-        data = read_env_file(path)
-        return data.get("SONARQUBE_TOKEN")
+        return read_env_file(path).get("SONARQUBE_TOKEN")
     text = path.read_text(encoding="utf-8").strip()
     if "=" in text and "SONARQUBE_TOKEN" in text:
         return read_env_file(path).get("SONARQUBE_TOKEN")
@@ -80,62 +83,48 @@ def get_context(name: str | None, store: PolicyStore | None = None) -> AnalysisC
     return store.get_context("local")
 
 
-def resolve_creds(
-    *,
-    context: str | None = None,
-    prefer_local: bool = False,
-    project_key: str | None = None,
-    store: PolicyStore | None = None,
+def _local_forced_creds(project_key: str | None) -> ResolvedCreds:
+    if not is_running():
+        start(wait=True)
+    token = ensure_token()
+    local = read_env_file(LOCAL_ENV)
+    return ResolvedCreds(
+        url=local.get("SONARQUBE_URL") or DEFAULT_LOCAL_URL,
+        token=token,
+        project_key=project_key
+        or local.get("SONARQUBE_PROJECT_KEY")
+        or os.environ.get("SONARQUBE_PROJECT_KEY"),
+        context_name="local",
+        prefer_local=True,
+    )
+
+
+def _creds_from_context(
+    ctx: AnalysisContext, project_key: str | None
 ) -> ResolvedCreds:
-    """Resolve URL/token/project for CLI use.
-
-    Precedence:
-      --context NAME → active context → --local → legacy env cascade
-    """
-    apply_sonar_env()
-    store = ensure_default_contexts(store)
-
-    if prefer_local and not context:
+    url = ctx.url or DEFAULT_LOCAL_URL
+    token = _token_from_ref(ctx.token_ref)
+    is_local = _is_local_url(url)
+    if is_local:
         if not is_running():
             start(wait=True)
-        token = ensure_token()
-        local = read_env_file(LOCAL_ENV)
-        return ResolvedCreds(
-            url=local.get("SONARQUBE_URL") or DEFAULT_LOCAL_URL,
-            token=token,
-            project_key=project_key
-            or local.get("SONARQUBE_PROJECT_KEY")
-            or os.environ.get("SONARQUBE_PROJECT_KEY"),
-            context_name="local",
-            prefer_local=True,
+        token = token or ensure_token()
+    if not token:
+        raise SystemExit(
+            f"No token for context '{ctx.name}' (token_ref={ctx.token_ref!r}). "
+            "Run sonar-local-up or sonar-credentials --cli / set token_ref."
         )
+    return ResolvedCreds(
+        url=url,
+        token=token,
+        project_key=project_key or ctx.project_key or os.environ.get("SONARQUBE_PROJECT_KEY"),
+        context_name=ctx.name,
+        org=ctx.org,
+        prefer_local=is_local,
+    )
 
-    ctx = get_context(context, store)
-    if ctx is not None:
-        url = ctx.url or DEFAULT_LOCAL_URL
-        token = _token_from_ref(ctx.token_ref)
-        is_local = url.startswith(("http://127.0.0.1", "http://localhost"))
-        if is_local:
-            if not is_running():
-                start(wait=True)
-            token = token or ensure_token()
-        if not token:
-            raise SystemExit(
-                f"No token for context '{ctx.name}' (token_ref={ctx.token_ref!r}). "
-                "Run sonar-local-up or sonar-credentials --cli / set token_ref."
-            )
-        return ResolvedCreds(
-            url=url,
-            token=token,
-            project_key=project_key
-            or ctx.project_key
-            or os.environ.get("SONARQUBE_PROJECT_KEY"),
-            context_name=ctx.name,
-            org=ctx.org,
-            prefer_local=is_local,
-        )
 
-    # Legacy cascade (no contexts yet)
+def _legacy_creds(project_key: str | None) -> ResolvedCreds:
     local = read_env_file(LOCAL_ENV)
     remote = read_env_file(REMOTE_ENV)
     url = (
@@ -156,7 +145,7 @@ def resolve_creds(
         or local.get("SONARQUBE_PROJECT_KEY")
     )
     if not token:
-        if url.startswith(("http://127.0.0.1", "http://localhost")):
+        if _is_local_url(url):
             if not is_running():
                 start(wait=True)
             return ResolvedCreds(
@@ -172,8 +161,33 @@ def resolve_creds(
         token=token,
         project_key=key,
         context_name=None,
-        prefer_local=url.startswith(("http://127.0.0.1", "http://localhost")),
+        prefer_local=_is_local_url(url),
     )
+
+
+def resolve_creds(
+    *,
+    context: str | None = None,
+    prefer_local: bool = False,
+    project_key: str | None = None,
+    store: PolicyStore | None = None,
+) -> ResolvedCreds:
+    """Resolve URL/token/project for CLI use.
+
+    Precedence:
+      --context NAME → active context → --local → legacy env cascade
+    """
+    apply_sonar_env()
+    store = ensure_default_contexts(store)
+
+    if prefer_local and not context:
+        return _local_forced_creds(project_key)
+
+    ctx = get_context(context, store)
+    if ctx is not None:
+        return _creds_from_context(ctx, project_key)
+
+    return _legacy_creds(project_key)
 
 
 def context_env_exports(ctx: AnalysisContext) -> dict[str, str]:
@@ -193,7 +207,7 @@ def context_env_exports(ctx: AnalysisContext) -> dict[str, str]:
 
 
 def default_token_ref_for_url(url: str) -> str:
-    if url.startswith(("http://127.0.0.1", "http://localhost")):
+    if _is_local_url(url):
         return str(LOCAL_ENV)
     return str(REMOTE_ENV)
 

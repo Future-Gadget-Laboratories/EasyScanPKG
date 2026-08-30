@@ -85,25 +85,29 @@ StartupNotify=true
             pass
 
     if also_desktop_shortcut:
-        desktop = Path.home() / "Desktop"
-        if desktop.is_dir():
-            shortcut = desktop / DESKTOP_ID
-            shutil.copy2(dest, shortcut)
-            shortcut.chmod(0o755)
-            legacy_desk = desktop / "sft-sonar.desktop"
-            if legacy_desk.is_file():
-                try:
-                    legacy_desk.unlink()
-                except OSError:
-                    pass
-            # Mark as trusted for Cinnamon/Nemo (ignore failures)
-            subprocess.run(
-                ["gio", "set", str(shortcut), "metadata::trusted", "true"],
-                capture_output=True,
-                check=False,
-            )
+        _install_desktop_shortcut(dest)
 
     return dest
+
+
+def _install_desktop_shortcut(desktop_entry: Path) -> None:
+    desktop = Path.home() / "Desktop"
+    if not desktop.is_dir():
+        return
+    shortcut = desktop / DESKTOP_ID
+    shutil.copy2(desktop_entry, shortcut)
+    shortcut.chmod(0o755)
+    legacy_desk = desktop / "sft-sonar.desktop"
+    if legacy_desk.is_file():
+        try:
+            legacy_desk.unlink()
+        except OSError:
+            pass
+    subprocess.run(
+        ["gio", "set", str(shortcut), "metadata::trusted", "true"],
+        capture_output=True,
+        check=False,
+    )
 
 
 def _get_favorites() -> list[str] | None:

@@ -8,6 +8,19 @@ import re
 from pathlib import Path
 
 
+def _replace_sonarqube_mcp_block(text: str, snippet: str) -> str:
+    """Replace the [mcp_servers.sonarqube] TOML table with snippet."""
+    header = "[mcp_servers.sonarqube]"
+    start = text.find(header)
+    if start < 0:
+        return text.rstrip() + "\n\n" + snippet
+    rest = text[start + len(header) :]
+    # Next top-level table starts at a line beginning with '['.
+    match = re.search(r"\n\[", rest)
+    end = start + len(header) + match.start() if match else len(text)
+    return text[:start] + snippet.strip() + "\n\n" + text[end:].lstrip("\n")
+
+
 def merge_codex_config(bridge: Path | None = None) -> Path:
     bridge = bridge or Path(os.environ.get("BRIDGE", Path(__file__).resolve().parents[1]))
     cfg = Path.home() / ".codex" / "config.toml"
@@ -34,13 +47,7 @@ def merge_codex_config(bridge: Path | None = None) -> Path:
 
     if cfg.is_file() and "[mcp_servers.sonarqube]" in cfg.read_text(encoding="utf-8"):
         text = cfg.read_text(encoding="utf-8")
-        text = re.sub(
-            r"\[mcp_servers\.sonarqube\][\s\S]*?(?=\n\[|\Z)",
-            snippet.strip() + "\n\n",
-            text,
-            count=1,
-        )
-        cfg.write_text(text, encoding="utf-8")
+        cfg.write_text(_replace_sonarqube_mcp_block(text, snippet), encoding="utf-8")
     else:
         cfg.parent.mkdir(parents=True, exist_ok=True)
         if cfg.is_file():

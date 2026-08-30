@@ -99,27 +99,42 @@ def _container_running(name: str) -> bool:
 def _ensure_container(name: str, run_args: list[str]) -> None:
     inspect = run_docker(["inspect", "--type", "container", name])
     if inspect.returncode == 0:
-        if not _container_running(name):
-            result = run_docker(["start", name])
-            if result.returncode != 0:
-                raise RuntimeError((result.stderr or result.stdout or f"start {name} failed")[-500:])
+        _start_existing_container(name)
         return
     result = run_docker(["run", "-d", "--name", name, *run_args])
+    if result.returncode == 0:
+        return
+    err = result.stderr or result.stdout or f"run {name} failed"
+    if _is_name_conflict(err):
+        _recover_name_conflict(name)
+        return
+    raise RuntimeError(err[-500:])
+
+
+def _start_existing_container(name: str) -> None:
+    if _container_running(name):
+        return
+    result = run_docker(["start", name])
     if result.returncode != 0:
-        err = result.stderr or result.stdout or f"run {name} failed"
-        err_lower = err.lower()
-        if "already in use" in err_lower or "conflict" in err_lower:
-            deadline = time.monotonic() + 30
-            while time.monotonic() < deadline:
-                if _container_running(name):
-                    return
-                start_result = run_docker(["start", name])
-                if start_result.returncode == 0:
-                    return
-                time.sleep(2)
-            if run_docker(["inspect", "--type", "container", name]).returncode == 0:
-                return
-        raise RuntimeError(err[-500:])
+        raise RuntimeError((result.stderr or result.stdout or f"start {name} failed")[-500:])
+
+
+def _is_name_conflict(err: str) -> bool:
+    err_lower = err.lower()
+    return "already in use" in err_lower or "conflict" in err_lower
+
+
+def _recover_name_conflict(name: str) -> None:
+    deadline = time.monotonic() + 30
+    while time.monotonic() < deadline:
+        if _container_running(name):
+            return
+        if run_docker(["start", name]).returncode == 0:
+            return
+        time.sleep(2)
+    if run_docker(["inspect", "--type", "container", name]).returncode == 0:
+        return
+    raise RuntimeError(f"container name conflict for {name} and recovery failed")
 
 
 def _wait_container_healthy(name: str, *, timeout_s: int = 120) -> None:
@@ -226,7 +241,7 @@ def status() -> LocalServerStatus:
 def _run_compose(*args: str) -> subprocess.CompletedProcess[str]:
     try:
         cmd = _compose_cmd(*args)
-    except RuntimeError as exc:
+    except RuntimeError:
         if args == ("up", "-d"):
             return _native_up()
         if args == ("down",):
@@ -235,29 +250,26 @@ def _run_compose(*args: str) -> subprocess.CompletedProcess[str]:
     if cmd[0] == shutil.which("docker") or cmd[0] == "docker":
         return run_docker(cmd[1:])
     result = subprocess.run(cmd, capture_output=True, text=True, check=False)
-    if result.returncode != 0:
-        from docker_util import _in_docker_group
+    if result.returncode == 0:
+        return result
+    from docker_util import _in_docker_group, _shell_quote
 
-        if _in_docker_group() and shutil.which("sg"):
-            from docker_util import _shell_quote
-
-            joined = " ".join(_shell_quote(cmd))
-            result = subprocess.run(
-                ["sg", "docker", "-c", joined],
-                capture_output=True,
-                text=True,
-                check=False,
-            )
-    return result
-
+    if not (_in_docker_group() and shutil.which("sg")):
+        return result
+    joined = " ".join(_shell_quote(cmd))
+    return subprocess.run(
+        ["sg", "docker", "-c", joined],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
 
 def start(*, wait: bool = True) -> LocalServerStatus:
     result = _run_compose("up", "-d")
     if result.returncode != 0:
         raise RuntimeError((result.stderr or result.stdout or "compose up failed")[-500:])
-    if wait:
-        if not wait_for_system_up(DEFAULT_LOCAL_URL):
-            raise RuntimeError(f"local SonarQube did not become UP at {DEFAULT_LOCAL_URL}")
+    if wait and not wait_for_system_up(DEFAULT_LOCAL_URL):
+        raise RuntimeError(f"local SonarQube did not become UP at {DEFAULT_LOCAL_URL}")
     return status()
 
 
@@ -354,7 +366,7 @@ def _ensure_admin_password() -> str:
         )
 
     password = _generate_admin_password()
-    code, body = _api(
+    code, _body = _api(
         "POST",
         "/api/users/change_password",
         user="admin",
