@@ -19,6 +19,7 @@ CipherBank `modulebuilder/mm` findings discovered via local Sonar (fix in Cipher
 | T10 | Multi-project / multi-server switching | Named `contexts` in policy DB + `sonar-context` CLI; `--context` on project/scan/issues |
 | T11 | Agent-ingestible issue checklist | `sonar-issues export` → `.sft/issue-checklist.md` (done when empty) |
 | T12 | Quality profile XML import per context | `sonar-profile import/export/list/bind` + optional remediation sidecar |
+| T13 | Agent bootstrap + fix-queue skills | `easyscan-bootstrap`, `sonar-fix-queue`; playbooks in `docs/` |
 
 Gate before GitHub: `./bin/easyscan-check --offline` and unit tests pass.
 
