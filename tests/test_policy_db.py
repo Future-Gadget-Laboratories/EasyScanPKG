@@ -38,7 +38,7 @@ class PolicyStoreTests(unittest.TestCase):
     def test_export_json(self) -> None:
         path = self.store.export_preferences()
         data = json.loads(path.read_text(encoding="utf-8"))
-        self.assertEqual(data["schema_version"], 1)
+        self.assertEqual(data["schema_version"], 2)
         self.assertIn("scan", data)
 
     def test_workspace_bind_and_overlay(self) -> None:

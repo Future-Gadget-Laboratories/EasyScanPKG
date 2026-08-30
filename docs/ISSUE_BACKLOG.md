@@ -16,6 +16,9 @@ CipherBank `modulebuilder/mm` findings discovered via local Sonar (fix in Cipher
 | T7 | No single verify gate | `bin/easyscan-check` (+ install/commission/desktop hooks) |
 | T8 | Skills not auto-installed on every start | `sonar-desktop` / commission call `install-skills.sh` |
 | T9 | C++/ASM/Julia expectations | `sonar-languages` honesty + README matrix |
+| T10 | Multi-project / multi-server switching | Named `contexts` in policy DB + `sonar-context` CLI; `--context` on project/scan/issues |
+| T11 | Agent-ingestible issue checklist | `sonar-issues export` → `.sft/issue-checklist.md` (done when empty) |
+| T12 | Quality profile XML import per context | `sonar-profile import/export/list/bind` + optional remediation sidecar |
 
 Gate before GitHub: `./bin/easyscan-check --offline` and unit tests pass.
 

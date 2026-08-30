@@ -20,3 +20,6 @@ sonar-local.env
 sonar-local-admin.json
 bridge.env
 desktop.env
+
+# Workspace Sonar overlays / generated checklists
+.sft/

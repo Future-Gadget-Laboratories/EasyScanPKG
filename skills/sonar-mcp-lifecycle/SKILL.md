@@ -70,11 +70,22 @@ Never commit tokens. Policy DB stores URLs/prefs only — tokens live in env fil
 "$BRIDGE/bin/sonar-policy" bind "$PWD" 'your.project.key'
 ```
 
+## Named contexts (multi-project)
+
+```bash
+"$BRIDGE/bin/sonar-context" create myapp --project-key local-myapp --gh org/myapp --use
+"$BRIDGE/bin/sonar-context" list
+"$BRIDGE/bin/sonar-context" bind myapp "$PWD" --project-key local-myapp
+```
+
+Contexts store URL + `token_ref` (path / `env:VAR`) — never raw tokens in `policy.db`.
+
 ## Verify
 
 1. `sonar-mcp-up --json` shows `backend`: `remote` | `local` | `standalone`
 2. With SonarQube for IDE open: `sonar-ide-port` prints port 64120–64130
 3. Cursor chat: MCP `ping_system`
+4. `easyscan-check` soft-reports active context + optional issue checklist
 
 ## Related
 

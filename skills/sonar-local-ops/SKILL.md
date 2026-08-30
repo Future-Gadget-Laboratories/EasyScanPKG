@@ -90,6 +90,38 @@ Compute Engine, then prints open issues.
 "$BRIDGE/bin/sonar-issues" --local list --json | head
 ```
 
+## 5b. Export checklist (agent work queue)
+
+```bash
+"$BRIDGE/bin/sonar-issues" --local export --workspace "$PWD" --refresh
+# → .sft/issue-checklist.md (+ .json). Re-export after fixes.
+# Done when open_count is 0 / checklist body says complete.
+```
+
+Treat unchecked markdown items as the work queue. Prefer code fixes over
+`resolve`/`accept` transitions.
+
+## 5c. Contexts (multiple GH / Sonar targets)
+
+```bash
+"$BRIDGE/bin/sonar-context" create myapp --project-key local-myapp --gh org/myapp --use
+"$BRIDGE/bin/sonar-context" list
+"$BRIDGE/bin/sonar-scan" --context myapp --workspace "$PWD" --sources src
+"$BRIDGE/bin/sonar-issues" --context myapp export --workspace "$PWD" --refresh
+```
+
+## 5d. Quality profile XML
+
+```bash
+"$BRIDGE/bin/sonar-profile" --local list
+"$BRIDGE/bin/sonar-profile" --local import /path/to/profile.xml \
+  --bind-project local-myapp --set-default
+```
+
+Optional companion remediation hints: `templates/remediation.example.json`
+(rule → fix guidance), referenced via `sonar-context create … --remediation PATH`
+or `sonar-profile import … --remediation PATH`.
+
 ## 6. Resolve / accept issues
 
 Prefer **code fixes**. Use `falsepositive` / `wontfix` / `accept` only with rationale.
@@ -114,11 +146,13 @@ Prefer **code fixes**. Use `falsepositive` / `wontfix` / `accept` only with rati
 ## Agent workflow
 
 1. `sonar-local-up` (or `sonar-desktop`)
-2. `sonar-project --local create local-<name> --workspace "$PWD"`
-3. `sonar-scan --workspace "$PWD" --sources <tree>`
-4. `sonar-issues --local list --severity CRITICAL,MAJOR`
-5. Fix code → re-scan
-6. Summarize remaining CRITICAL/MAJOR with file:line
+2. `sonar-context create|use` (optional but recommended for multi-repo work)
+3. `sonar-project --local create local-<name> --workspace "$PWD"`
+4. Optional: `sonar-profile import … --bind-project local-<name>`
+5. `sonar-scan --workspace "$PWD" --sources <tree>`
+6. `sonar-issues export --workspace "$PWD" --refresh`
+7. Fix from checklist → re-scan → re-export until `open_count=0`
+8. Summarize remaining CRITICAL/MAJOR with file:line if any remain
 
 ## Related skills
 

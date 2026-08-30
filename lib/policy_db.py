@@ -16,7 +16,7 @@ from typing import Any, Mapping
 
 
 DEFAULT_CONFIG_DIR = Path.home() / ".config" / "sft" / "sonar-policy"
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 DEFAULT_SCAN_PREFS: dict[str, Any] = {
     "include_globs": ["**/*"],
@@ -67,12 +67,39 @@ class ConnectionPrefs:
     mcp_container_name: str = "sft-sonarqube-mcp"
 
 
+@dataclass
+class AnalysisContext:
+    name: str
+    url: str | None = None
+    token_ref: str | None = None
+    org: str | None = None
+    project_key: str | None = None
+    tags: list[str] | None = None
+    remediation_path: str | None = None
+    volume_namespace: str | None = None
+    active: bool = False
+    updated_at: str | None = None
+
+
+@dataclass
+class ContextProfile:
+    context_name: str
+    language: str
+    profile_name: str
+    profile_key: str | None = None
+    is_default: bool = False
+    updated_at: str | None = None
+
+
 class PolicyStore:
     def __init__(self, root: Path | None = None) -> None:
         self.root = Path(root) if root else DEFAULT_CONFIG_DIR
         self.db_path = self.root / "policy.db"
         self.export_path = self.root / "preferences.json"
         self.root.mkdir(parents=True, exist_ok=True)
+        self._init_schema()
+
+    def ensure_schema(self) -> None:
         self._init_schema()
 
     def _connect(self) -> sqlite3.Connection:
@@ -104,6 +131,7 @@ class PolicyStore:
                   path TEXT PRIMARY KEY,
                   project_key TEXT,
                   last_ide_port INTEGER,
+                  context_name TEXT,
                   updated_at TEXT NOT NULL
                 );
 
@@ -121,8 +149,40 @@ class PolicyStore:
                   detail_json TEXT NOT NULL,
                   created_at TEXT NOT NULL
                 );
+
+                CREATE TABLE IF NOT EXISTS contexts (
+                  name TEXT PRIMARY KEY,
+                  url TEXT,
+                  token_ref TEXT,
+                  org TEXT,
+                  project_key TEXT,
+                  tags_json TEXT NOT NULL DEFAULT '[]',
+                  remediation_path TEXT,
+                  volume_namespace TEXT,
+                  active INTEGER NOT NULL DEFAULT 0,
+                  updated_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS context_profiles (
+                  context_name TEXT NOT NULL,
+                  language TEXT NOT NULL,
+                  profile_name TEXT NOT NULL,
+                  profile_key TEXT,
+                  is_default INTEGER NOT NULL DEFAULT 0,
+                  updated_at TEXT NOT NULL,
+                  PRIMARY KEY (context_name, language, profile_name),
+                  FOREIGN KEY (context_name) REFERENCES contexts(name) ON DELETE CASCADE
+                );
                 """
             )
+            # Migrate older DBs that lack workspaces.context_name
+            cols = {
+                r["name"]
+                for r in conn.execute("PRAGMA table_info(workspaces)").fetchall()
+            }
+            if "context_name" not in cols:
+                conn.execute("ALTER TABLE workspaces ADD COLUMN context_name TEXT")
+
             row = conn.execute(
                 "SELECT value FROM meta WHERE key = 'schema_version'"
             ).fetchone()
@@ -131,6 +191,16 @@ class PolicyStore:
                     "INSERT INTO meta(key, value) VALUES ('schema_version', ?)",
                     (str(SCHEMA_VERSION),),
                 )
+            else:
+                try:
+                    current = int(row["value"])
+                except ValueError:
+                    current = 0
+                if current < SCHEMA_VERSION:
+                    conn.execute(
+                        "UPDATE meta SET value = ? WHERE key = 'schema_version'",
+                        (str(SCHEMA_VERSION),),
+                    )
             if conn.execute("SELECT 1 FROM connection_prefs WHERE id = 1").fetchone() is None:
                 conn.execute(
                     """
@@ -157,6 +227,7 @@ class PolicyStore:
                     "local_url": "http://127.0.0.1:9000",
                     "local_project_prefix": "local-",
                     "active_backend": "unknown",
+                    "active_context": None,
                 },
             )
 
@@ -267,6 +338,7 @@ class PolicyStore:
         *,
         project_key: str | None = None,
         last_ide_port: int | None = None,
+        context_name: str | None = None,
     ) -> dict[str, Any]:
         workspace = str(Path(path).resolve())
         with self._connect() as conn:
@@ -276,10 +348,10 @@ class PolicyStore:
             if existing is None:
                 conn.execute(
                     """
-                    INSERT INTO workspaces(path, project_key, last_ide_port, updated_at)
-                    VALUES (?, ?, ?, ?)
+                    INSERT INTO workspaces(path, project_key, last_ide_port, context_name, updated_at)
+                    VALUES (?, ?, ?, ?, ?)
                     """,
-                    (workspace, project_key, last_ide_port, _utc_now()),
+                    (workspace, project_key, last_ide_port, context_name, _utc_now()),
                 )
             else:
                 conn.execute(
@@ -287,10 +359,11 @@ class PolicyStore:
                     UPDATE workspaces SET
                       project_key = COALESCE(?, project_key),
                       last_ide_port = COALESCE(?, last_ide_port),
+                      context_name = COALESCE(?, context_name),
                       updated_at = ?
                     WHERE path = ?
                     """,
-                    (project_key, last_ide_port, _utc_now(), workspace),
+                    (project_key, last_ide_port, context_name, _utc_now(), workspace),
                 )
             row = conn.execute(
                 "SELECT * FROM workspaces WHERE path = ?", (workspace,)
@@ -306,6 +379,239 @@ class PolicyStore:
                 "SELECT * FROM workspaces WHERE path = ?", (workspace,)
             ).fetchone()
         return dict(row) if row else None
+
+    @staticmethod
+    def _row_to_context(row: sqlite3.Row) -> AnalysisContext:
+        tags_raw = row["tags_json"] or "[]"
+        try:
+            tags = json.loads(tags_raw)
+        except json.JSONDecodeError:
+            tags = []
+        if not isinstance(tags, list):
+            tags = []
+        return AnalysisContext(
+            name=row["name"],
+            url=row["url"],
+            token_ref=row["token_ref"],
+            org=row["org"],
+            project_key=row["project_key"],
+            tags=[str(t) for t in tags],
+            remediation_path=row["remediation_path"],
+            volume_namespace=row["volume_namespace"],
+            active=bool(row["active"]),
+            updated_at=row["updated_at"],
+        )
+
+    def list_contexts(self) -> list[AnalysisContext]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM contexts ORDER BY name COLLATE NOCASE"
+            ).fetchall()
+        return [self._row_to_context(r) for r in rows]
+
+    def get_context(self, name: str) -> AnalysisContext | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM contexts WHERE name = ?", (name,)
+            ).fetchone()
+        return self._row_to_context(row) if row else None
+
+    def get_active_context_name(self) -> str | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT name FROM contexts WHERE active = 1 LIMIT 1"
+            ).fetchone()
+        if row:
+            return str(row["name"])
+        domain = self.get_domain("connection")
+        active = domain.get("active_context")
+        return str(active) if active else None
+
+    def upsert_context(
+        self,
+        name: str,
+        *,
+        url: str | None = None,
+        token_ref: str | None = None,
+        org: str | None = None,
+        project_key: str | None = None,
+        tags: list[str] | None = None,
+        remediation_path: str | None = None,
+        volume_namespace: str | None = None,
+        activate: bool = False,
+        clear_org: bool = False,
+        clear_project_key: bool = False,
+        clear_remediation: bool = False,
+    ) -> AnalysisContext:
+        name = name.strip()
+        if not name or any(c in name for c in "/\\ \t\n"):
+            raise ValueError("context name must be a non-empty token without spaces/slashes")
+        existing = self.get_context(name)
+        next_tags = tags if tags is not None else (existing.tags if existing else [])
+        next_url = url if url is not None else (existing.url if existing else None)
+        next_token = token_ref if token_ref is not None else (existing.token_ref if existing else None)
+        next_org = None if clear_org else (org if org is not None else (existing.org if existing else None))
+        next_pk = (
+            None
+            if clear_project_key
+            else (
+                project_key
+                if project_key is not None
+                else (existing.project_key if existing else None)
+            )
+        )
+        next_rem = (
+            None
+            if clear_remediation
+            else (
+                remediation_path
+                if remediation_path is not None
+                else (existing.remediation_path if existing else None)
+            )
+        )
+        next_vol = (
+            volume_namespace
+            if volume_namespace is not None
+            else (existing.volume_namespace if existing else None)
+        )
+        now = _utc_now()
+        with self._connect() as conn:
+            if activate:
+                conn.execute("UPDATE contexts SET active = 0")
+            active_flag = 1 if activate else (1 if existing and existing.active else 0)
+            conn.execute(
+                """
+                INSERT INTO contexts(
+                  name, url, token_ref, org, project_key, tags_json,
+                  remediation_path, volume_namespace, active, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(name) DO UPDATE SET
+                  url = excluded.url,
+                  token_ref = excluded.token_ref,
+                  org = excluded.org,
+                  project_key = excluded.project_key,
+                  tags_json = excluded.tags_json,
+                  remediation_path = excluded.remediation_path,
+                  volume_namespace = excluded.volume_namespace,
+                  active = excluded.active,
+                  updated_at = excluded.updated_at
+                """,
+                (
+                    name,
+                    next_url,
+                    next_token,
+                    next_org,
+                    next_pk,
+                    json.dumps(list(next_tags or [])),
+                    next_rem,
+                    next_vol,
+                    active_flag,
+                    now,
+                ),
+            )
+        if activate:
+            self.set_pref("connection", "active_context", name)
+        self.export_preferences()
+        ctx = self.get_context(name)
+        assert ctx is not None
+        return ctx
+
+    def use_context(self, name: str) -> AnalysisContext:
+        ctx = self.get_context(name)
+        if ctx is None:
+            raise KeyError(f"unknown context: {name}")
+        with self._connect() as conn:
+            conn.execute("UPDATE contexts SET active = 0")
+            conn.execute(
+                "UPDATE contexts SET active = 1, updated_at = ? WHERE name = ?",
+                (_utc_now(), name),
+            )
+        self.set_pref("connection", "active_context", name)
+        if ctx.url:
+            self.set_connection_prefs(last_url=ctx.url, last_org=ctx.org)
+        self.export_preferences()
+        out = self.get_context(name)
+        assert out is not None
+        return out
+
+    def delete_context(self, name: str) -> None:
+        with self._connect() as conn:
+            conn.execute("DELETE FROM context_profiles WHERE context_name = ?", (name,))
+            conn.execute("DELETE FROM contexts WHERE name = ?", (name,))
+        if self.get_domain("connection").get("active_context") == name:
+            self.set_pref("connection", "active_context", None)
+        self.export_preferences()
+
+    def list_context_profiles(self, context_name: str) -> list[ContextProfile]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM context_profiles
+                WHERE context_name = ?
+                ORDER BY language, profile_name
+                """,
+                (context_name,),
+            ).fetchall()
+        return [
+            ContextProfile(
+                context_name=r["context_name"],
+                language=r["language"],
+                profile_name=r["profile_name"],
+                profile_key=r["profile_key"],
+                is_default=bool(r["is_default"]),
+                updated_at=r["updated_at"],
+            )
+            for r in rows
+        ]
+
+    def upsert_context_profile(
+        self,
+        context_name: str,
+        *,
+        language: str,
+        profile_name: str,
+        profile_key: str | None = None,
+        is_default: bool = False,
+    ) -> ContextProfile:
+        if self.get_context(context_name) is None:
+            raise KeyError(f"unknown context: {context_name}")
+        now = _utc_now()
+        with self._connect() as conn:
+            if is_default:
+                conn.execute(
+                    """
+                    UPDATE context_profiles SET is_default = 0
+                    WHERE context_name = ? AND language = ?
+                    """,
+                    (context_name, language),
+                )
+            conn.execute(
+                """
+                INSERT INTO context_profiles(
+                  context_name, language, profile_name, profile_key, is_default, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(context_name, language, profile_name) DO UPDATE SET
+                  profile_key = excluded.profile_key,
+                  is_default = excluded.is_default,
+                  updated_at = excluded.updated_at
+                """,
+                (
+                    context_name,
+                    language,
+                    profile_name,
+                    profile_key,
+                    1 if is_default else 0,
+                    now,
+                ),
+            )
+        self.export_preferences()
+        profiles = [
+            p
+            for p in self.list_context_profiles(context_name)
+            if p.language == language and p.profile_name == profile_name
+        ]
+        assert profiles
+        return profiles[0]
 
     def record_event(self, kind: str, detail: Mapping[str, Any]) -> None:
         # Strip any accidental token-looking keys
@@ -330,6 +636,7 @@ class PolicyStore:
 
     def snapshot(self) -> dict[str, Any]:
         conn_prefs = self.get_connection_prefs()
+        contexts = self.list_contexts()
         with self._connect() as conn:
             workspaces = [dict(r) for r in conn.execute("SELECT * FROM workspaces")]
             events = [
@@ -338,6 +645,7 @@ class PolicyStore:
                     "SELECT kind, detail_json, created_at FROM events ORDER BY id DESC LIMIT 20"
                 )
             ]
+            profiles = [dict(r) for r in conn.execute("SELECT * FROM context_profiles")]
         for event in events:
             event["detail"] = json.loads(event.pop("detail_json"))
         return {
@@ -348,12 +656,28 @@ class PolicyStore:
                 "last_org": conn_prefs.last_org,
                 "mcp_image": conn_prefs.mcp_image,
                 "mcp_container_name": conn_prefs.mcp_container_name,
+                "active_context": self.get_active_context_name(),
             },
             "scan": self.get_domain("scan"),
             "agent": self.get_domain("agent"),
             "hook": self.get_domain("hook"),
             "tool": self.get_domain("tool"),
             "workspaces": workspaces,
+            "contexts": [
+                {
+                    "name": c.name,
+                    "url": c.url,
+                    "token_ref": c.token_ref,
+                    "org": c.org,
+                    "project_key": c.project_key,
+                    "tags": c.tags or [],
+                    "remediation_path": c.remediation_path,
+                    "volume_namespace": c.volume_namespace,
+                    "active": c.active,
+                }
+                for c in contexts
+            ],
+            "context_profiles": profiles,
             "recent_events": events,
         }
 

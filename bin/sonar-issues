@@ -1,16 +1,12 @@
 #!/usr/bin/env python3
-"""List and resolve SonarQube issues on the local or remote server."""
+"""List, export, and resolve SonarQube issues on the local or remote server."""
 
 from __future__ import annotations
 
 import argparse
-import base64
 import json
-import os
 import sys
-import urllib.error
 import urllib.parse
-import urllib.request
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -18,61 +14,9 @@ from _bootstrap import bootstrap
 
 bootstrap()
 
-from env_load import apply_sonar_env  # noqa: E402
-from env_write import LOCAL_ENV, REMOTE_ENV, read_env_file  # noqa: E402
-from local_server import DEFAULT_LOCAL_URL, ensure_token, is_running, start  # noqa: E402
-
-
-def _auth_header(token: str) -> str:
-    return "Basic " + base64.b64encode(f"{token}:".encode()).decode("ascii")
-
-
-def _api(base: str, token: str, method: str, path: str, query: dict | None = None) -> tuple[int, dict | str]:
-    url = base.rstrip("/") + path
-    if query:
-        url += "?" + urllib.parse.urlencode({k: v for k, v in query.items() if v is not None})
-    req = urllib.request.Request(url, method=method)
-    req.add_header("Authorization", _auth_header(token))
-    try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            body = resp.read().decode("utf-8")
-            try:
-                return resp.status, json.loads(body) if body else {}
-            except json.JSONDecodeError:
-                return resp.status, body
-    except urllib.error.HTTPError as exc:
-        body = exc.read().decode("utf-8", errors="replace")
-        try:
-            return exc.code, json.loads(body) if body else {}
-        except json.JSONDecodeError:
-            return exc.code, body
-
-
-def _creds(*, prefer_local: bool) -> tuple[str, str, str | None]:
-    apply_sonar_env()
-    local = read_env_file(LOCAL_ENV)
-    remote = read_env_file(REMOTE_ENV)
-    if prefer_local:
-        if not is_running():
-            start(wait=True)
-        token = ensure_token()
-        url = local.get("SONARQUBE_URL") or DEFAULT_LOCAL_URL
-        key = local.get("SONARQUBE_PROJECT_KEY") or os.environ.get("SONARQUBE_PROJECT_KEY")
-        return url, token, key
-    url = os.environ.get("SONARQUBE_URL") or remote.get("SONARQUBE_URL") or local.get("SONARQUBE_URL") or DEFAULT_LOCAL_URL
-    token = os.environ.get("SONARQUBE_TOKEN") or remote.get("SONARQUBE_TOKEN") or local.get("SONARQUBE_TOKEN")
-    key = (
-        os.environ.get("SONARQUBE_PROJECT_KEY")
-        or remote.get("SONARQUBE_PROJECT_KEY")
-        or local.get("SONARQUBE_PROJECT_KEY")
-    )
-    if not token:
-        if url.startswith(("http://127.0.0.1", "http://localhost")):
-            if not is_running():
-                start(wait=True)
-            return (local.get("SONARQUBE_URL") or DEFAULT_LOCAL_URL), ensure_token(), key
-        raise SystemExit("No SONARQUBE_TOKEN")
-    return url, token, key
+from context_resolve import resolve_creds  # noqa: E402
+from issue_checklist import build_payload, write_checklist  # noqa: E402
+from sonar_api import api  # noqa: E402
 
 
 def _fmt_issue(issue: dict) -> str:
@@ -84,24 +28,31 @@ def _fmt_issue(issue: dict) -> str:
     )
 
 
-def cmd_list(args: argparse.Namespace) -> int:
-    url, token, default_key = _creds(prefer_local=args.local)
-    key = args.project_key or default_key
+def _search(args: argparse.Namespace) -> tuple[str, str, str, dict]:
+    creds = resolve_creds(
+        context=getattr(args, "context", None),
+        prefer_local=bool(getattr(args, "local", False)),
+        project_key=getattr(args, "project_key", None),
+    )
+    key = args.project_key or creds.project_key
     if not key:
-        print("Need --project-key", file=sys.stderr)
-        return 2
+        raise SystemExit("Need --project-key (or bind a project / set context project_key)")
     query = {
         "componentKeys": key,
         "ps": args.limit,
-        "resolved": "false" if not args.resolved else "true",
-        "severities": args.severity,
-        "types": args.type,
+        "resolved": "true" if getattr(args, "resolved", False) else "false",
+        "severities": getattr(args, "severity", None),
+        "types": getattr(args, "type", None),
         "facets": "severities,types,rules",
     }
-    code, data = _api(url, token, "GET", "/api/issues/search", query)
+    code, data = api(creds.url, creds.token, "GET", "/api/issues/search", query=query)
     if code != 200 or not isinstance(data, dict):
-        print(f"search failed: HTTP {code} {data}", file=sys.stderr)
-        return 1
+        raise SystemExit(f"search failed: HTTP {code} {data}")
+    return creds.url, key, creds.context_name or "", data
+
+
+def cmd_list(args: argparse.Namespace) -> int:
+    url, key, _ctx, data = _search(args)
     if args.json:
         print(json.dumps(data, indent=2))
         return 0
@@ -118,9 +69,51 @@ def cmd_list(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_export(args: argparse.Namespace) -> int:
+    # --refresh is an alias for a full live regenerate (always live today)
+    _ = args.refresh
+    url, key, ctx, data = _search(args)
+    workspace = Path(args.workspace).resolve() if args.workspace else Path.cwd()
+    filters = {
+        "severity": args.severity,
+        "type": args.type,
+        "resolved": bool(args.resolved),
+        "limit": args.limit,
+    }
+    payload = build_payload(
+        server_url=url,
+        project_key=key,
+        issues=data.get("issues") or [],
+        context=ctx or None,
+        filters={k: v for k, v in filters.items() if v not in (None, False)},
+        total=int(data.get("total") or 0),
+    )
+    md_path = Path(args.output) if args.output else None
+    json_path = Path(args.json_output) if args.json_output else None
+    md_out, json_out = write_checklist(
+        workspace,
+        payload,
+        md_path=md_path,
+        json_path=json_path,
+        write_json=not args.no_json,
+    )
+    if args.json:
+        print(json.dumps(payload, indent=2))
+    else:
+        print(f"Checklist: {md_out}")
+        if json_out:
+            print(f"JSON:      {json_out}")
+        print(f"open_count={payload['open_count']} resolved={payload['resolved']}")
+        if payload["resolved"]:
+            print("Done — checklist empty.")
+    return 0
+
+
 def cmd_transitions(args: argparse.Namespace) -> int:
-    url, token, _ = _creds(prefer_local=args.local)
-    code, data = _api(url, token, "GET", "/api/issues/transitions", {"issue": args.issue})
+    creds = resolve_creds(context=args.context, prefer_local=args.local)
+    code, data = api(
+        creds.url, creds.token, "GET", "/api/issues/transitions", query={"issue": args.issue}
+    )
     if code != 200 or not isinstance(data, dict):
         print(f"transitions failed: HTTP {code} {data}", file=sys.stderr)
         return 1
@@ -133,31 +126,38 @@ def cmd_transitions(args: argparse.Namespace) -> int:
 
 
 def cmd_resolve(args: argparse.Namespace) -> int:
-    url, token, _ = _creds(prefer_local=args.local)
+    creds = resolve_creds(context=args.context, prefer_local=args.local)
     transition = args.transition
-    # Prefer modern Accept workflow when user said "resolve" but only accept exists
-    code, data = _api(url, token, "GET", "/api/issues/transitions", {"issue": args.issue})
-    available = []
+    code, data = api(
+        creds.url, creds.token, "GET", "/api/issues/transitions", query={"issue": args.issue}
+    )
+    available: list[str] = []
     if code == 200 and isinstance(data, dict):
-        available = [t.get("transition") or t for t in data.get("transitions", [])]
-        available = [str(t) for t in available]
+        available = [str(t.get("transition") or t) for t in data.get("transitions", [])]
     if transition not in available and available:
         for fallback in ("resolve", "accept", "wontfix", "falsepositive"):
             if fallback in available:
                 if transition == "resolve" and fallback != "resolve":
-                    print(f"note: using transition '{fallback}' (resolve not available)", file=sys.stderr)
+                    print(
+                        f"note: using transition '{fallback}' (resolve not available)",
+                        file=sys.stderr,
+                    )
                 transition = fallback
                 break
-    code, body = _api(
-        url,
-        token,
+    code, body = api(
+        creds.url,
+        creds.token,
         "POST",
         "/api/issues/do_transition",
-        {"issue": args.issue, "transition": transition},
+        query={"issue": args.issue, "transition": transition},
     )
     ok = code == 200
     if args.json:
-        print(json.dumps({"ok": ok, "http": code, "transition": transition, "body": body}, indent=2))
+        print(
+            json.dumps(
+                {"ok": ok, "http": code, "transition": transition, "body": body}, indent=2
+            )
+        )
     else:
         if ok:
             print(f"OK: {args.issue} -> {transition}")
@@ -171,6 +171,7 @@ def cmd_resolve(args: argparse.Namespace) -> int:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--local", action="store_true")
+    parser.add_argument("--context", help="Named analysis context (sonar-context)")
     parser.add_argument("--json", action="store_true")
     sub = parser.add_subparsers(dest="cmd", required=True)
 
@@ -180,6 +181,27 @@ def main() -> int:
     p_list.add_argument("--severity", help="Comma list e.g. CRITICAL,MAJOR")
     p_list.add_argument("--type", dest="type", help="Comma list e.g. BUG,VULNERABILITY,CODE_SMELL")
     p_list.add_argument("--resolved", action="store_true", help="Show resolved instead of open")
+
+    p_exp = sub.add_parser(
+        "export",
+        help="Export open issues to an agent-ingestible checklist (.md + .json)",
+    )
+    p_exp.add_argument("--project-key")
+    p_exp.add_argument("--workspace", help="Workspace root (default: cwd)")
+    p_exp.add_argument("--limit", type=int, default=500)
+    p_exp.add_argument("--severity", help="Comma list e.g. CRITICAL,MAJOR")
+    p_exp.add_argument("--type", dest="type", help="Comma list e.g. BUG,VULNERABILITY,CODE_SMELL")
+    p_exp.add_argument("--resolved", action="store_true", help="Export resolved instead of open")
+    p_exp.add_argument(
+        "--refresh",
+        action="store_true",
+        help="Regenerate checklist from live Sonar search (default behavior)",
+    )
+    p_exp.add_argument("--output", help="Markdown path (default: <ws>/.sft/issue-checklist.md)")
+    p_exp.add_argument(
+        "--json-output", help="JSON path (default: <ws>/.sft/issue-checklist.json)"
+    )
+    p_exp.add_argument("--no-json", action="store_true", help="Skip writing the JSON twin")
 
     p_tr = sub.add_parser("transitions", help="Show allowed transitions for an issue key")
     p_tr.add_argument("issue")
@@ -195,6 +217,8 @@ def main() -> int:
     args = parser.parse_args()
     if args.cmd == "list":
         return cmd_list(args)
+    if args.cmd == "export":
+        return cmd_export(args)
     if args.cmd == "transitions":
         return cmd_transitions(args)
     if args.cmd == "resolve":

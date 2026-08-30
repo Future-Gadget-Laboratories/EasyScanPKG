@@ -12,6 +12,7 @@ WORKSPACE=""
 SOURCES="."
 PROJECT_KEY=""
 COMPILE_COMMANDS=""
+CONTEXT=""
 EXAMPLE_WS="${EASYSCAN_EXAMPLE_WS:-}"
 
 usage() {
@@ -20,7 +21,8 @@ Usage: $(basename "$0") [options]
 
   --workspace PATH            Project root to scan (default: desktop.env / \$PWD)
   --sources CSV               Relative source dirs (default: .)
-  --project-key KEY           Override project key (default: from sonar-local.env)
+  --project-key KEY           Override project key (default: from context / sonar-local.env)
+  --context NAME              Named analysis context (sonar-context)
   --compile-commands PATH     Relative path to compile_commands.json (CFamily Compilation DB mode)
 
 Scans with sonarsource/sonar-scanner-cli over Docker --network=host.
@@ -34,6 +36,7 @@ while [[ $# -gt 0 ]]; do
     --workspace) WORKSPACE="$2"; shift 2 ;;
     --sources) SOURCES="$2"; shift 2 ;;
     --project-key) PROJECT_KEY="$2"; shift 2 ;;
+    --context) CONTEXT="$2"; shift 2 ;;
     --compile-commands) COMPILE_COMMANDS="$2"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Unknown option: $1" >&2; usage; exit 2 ;;
@@ -58,6 +61,14 @@ set -a
 [[ -f "$HOME/.config/sft/sonar.env" ]] && . "$HOME/.config/sft/sonar.env"
 [[ -f "$HOME/.config/sft/sonar-local.env" ]] && . "$HOME/.config/sft/sonar-local.env"
 set +a
+
+# Optional named context overrides URL/token/project
+if [[ -n "$CONTEXT" ]]; then
+  # shellcheck disable=SC1090
+  eval "$("$ROOT/bin/sonar-context" use "$CONTEXT" --export-env 2>/dev/null | grep '^export ')"
+elif [[ -n "${SFT_SONAR_CONTEXT:-}" ]]; then
+  eval "$("$ROOT/bin/sonar-context" use "$SFT_SONAR_CONTEXT" --export-env 2>/dev/null | grep '^export ')" || true
+fi
 
 : "${SONARQUBE_URL:=http://127.0.0.1:9000}"
 : "${SONARQUBE_TOKEN:?Set SONARQUBE_TOKEN in ~/.config/sft/sonar-local.env (run sonar-local-up)}"

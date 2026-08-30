@@ -4,13 +4,8 @@
 from __future__ import annotations
 
 import argparse
-import base64
 import json
-import os
 import sys
-import urllib.error
-import urllib.parse
-import urllib.request
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -18,62 +13,22 @@ from _bootstrap import bootstrap
 
 bootstrap()
 
-from env_load import apply_sonar_env  # noqa: E402
-from env_write import LOCAL_ENV, REMOTE_ENV, read_env_file, update_local_credentials  # noqa: E402
-from local_server import DEFAULT_LOCAL_URL, ensure_token, is_running, start  # noqa: E402
+from context_resolve import resolve_creds  # noqa: E402
+from env_write import update_local_credentials  # noqa: E402
+from local_server import DEFAULT_LOCAL_URL  # noqa: E402
 from policy_db import resolve_store  # noqa: E402
-
-
-def _auth_header(token: str) -> str:
-    return "Basic " + base64.b64encode(f"{token}:".encode()).decode("ascii")
-
-
-def _api(base: str, token: str, method: str, path: str, query: dict | None = None) -> tuple[int, dict | str]:
-    url = base.rstrip("/") + path
-    if query:
-        url += "?" + urllib.parse.urlencode(query)
-    req = urllib.request.Request(url, method=method)
-    req.add_header("Authorization", _auth_header(token))
-    try:
-        with urllib.request.urlopen(req, timeout=20) as resp:
-            body = resp.read().decode("utf-8")
-            try:
-                return resp.status, json.loads(body) if body else {}
-            except json.JSONDecodeError:
-                return resp.status, body
-    except urllib.error.HTTPError as exc:
-        body = exc.read().decode("utf-8", errors="replace")
-        try:
-            return exc.code, json.loads(body) if body else {}
-        except json.JSONDecodeError:
-            return exc.code, body
-
-
-def _resolve_creds(*, prefer_local: bool) -> tuple[str, str]:
-    apply_sonar_env()
-    local = read_env_file(LOCAL_ENV)
-    remote = read_env_file(REMOTE_ENV)
-    if prefer_local or (local.get("SONARQUBE_TOKEN") and (is_running() or prefer_local)):
-        if not is_running():
-            start(wait=True)
-        token = ensure_token()
-        url = local.get("SONARQUBE_URL") or DEFAULT_LOCAL_URL
-        return url, token
-    url = os.environ.get("SONARQUBE_URL") or remote.get("SONARQUBE_URL") or local.get("SONARQUBE_URL") or DEFAULT_LOCAL_URL
-    token = os.environ.get("SONARQUBE_TOKEN") or remote.get("SONARQUBE_TOKEN") or local.get("SONARQUBE_TOKEN")
-    if not token:
-        if url.startswith("http://127.0.0.1") or url.startswith("http://localhost"):
-            if not is_running():
-                start(wait=True)
-            token = ensure_token()
-            return local.get("SONARQUBE_URL") or DEFAULT_LOCAL_URL, token
-        raise SystemExit("No SONARQUBE_TOKEN — run sonar-local-up or sonar-credentials --cli")
-    return url, token
+from sonar_api import api  # noqa: E402
 
 
 def cmd_list(args: argparse.Namespace) -> int:
-    url, token = _resolve_creds(prefer_local=args.local)
-    code, data = _api(url, token, "GET", "/api/projects/search", {"ps": args.limit, "q": args.query or ""})
+    creds = resolve_creds(context=args.context, prefer_local=args.local)
+    code, data = api(
+        creds.url,
+        creds.token,
+        "GET",
+        "/api/projects/search",
+        query={"ps": args.limit, "q": args.query or ""},
+    )
     if code != 200 or not isinstance(data, dict):
         print(f"list failed: HTTP {code} {data}", file=sys.stderr)
         return 1
@@ -82,43 +37,63 @@ def cmd_list(args: argparse.Namespace) -> int:
         for c in data.get("components", [])
     ]
     if args.json:
-        print(json.dumps({"url": url, "projects": rows}, indent=2))
+        print(
+            json.dumps(
+                {"url": creds.url, "context": creds.context_name, "projects": rows},
+                indent=2,
+            )
+        )
     else:
-        print(f"Server: {url}  ({len(rows)} projects)")
+        ctx = f" context={creds.context_name}" if creds.context_name else ""
+        print(f"Server: {creds.url}{ctx}  ({len(rows)} projects)")
         for r in rows:
             print(f"  {r['key']}\t{r['name']}")
     return 0
 
 
 def cmd_create(args: argparse.Namespace) -> int:
-    url, token = _resolve_creds(prefer_local=args.local)
+    creds = resolve_creds(context=args.context, prefer_local=args.local)
     key = args.project_key
     name = args.name or key
-    code, data = _api(
-        url,
-        token,
+    code, data = api(
+        creds.url,
+        creds.token,
         "POST",
         "/api/projects/create",
-        {"project": key, "name": name},
+        query={"project": key, "name": name},
     )
     ok = code == 200 or (code == 400 and "already" in str(data).lower())
     if not ok:
         print(f"create failed: HTTP {code} {data}", file=sys.stderr)
         return 1
 
-    if args.local or url.startswith("http://127.0.0.1") or url.startswith("http://localhost"):
-        update_local_credentials(url, token, project_key=key)
+    if args.local or creds.prefer_local or creds.url.startswith(
+        ("http://127.0.0.1", "http://localhost")
+    ):
+        update_local_credentials(creds.url, creds.token, project_key=key)
 
     store = resolve_store()
+    ctx_name = args.context or creds.context_name
+    if ctx_name:
+        store.upsert_context(ctx_name, project_key=key, url=creds.url)
     if args.workspace:
-        store.upsert_workspace(args.workspace, project_key=key)
-        store.set_connection_prefs(last_url=url)
+        store.upsert_workspace(args.workspace, project_key=key, context_name=ctx_name)
+        store.set_connection_prefs(last_url=creds.url)
 
-    payload = {"ok": True, "url": url, "project_key": key, "name": name, "http": code}
+    payload = {
+        "ok": True,
+        "url": creds.url,
+        "context": ctx_name,
+        "project_key": key,
+        "name": name,
+        "http": code,
+    }
     if args.json:
         print(json.dumps(payload, indent=2))
     else:
-        print(f"Project ready: {key} @ {url}")
+        print(f"Project ready: {key} @ {creds.url}")
+        if ctx_name:
+            print(f"Context: {ctx_name}")
         if args.workspace:
             print(f"Bound workspace: {args.workspace}")
     return 0
@@ -126,25 +101,33 @@ def cmd_create(args: argparse.Namespace) -> int:
 
 def cmd_bind(args: argparse.Namespace) -> int:
     store = resolve_store()
-    row = store.upsert_workspace(args.workspace, project_key=args.project_key)
-    if args.local:
-        local = read_env_file(LOCAL_ENV)
-        token = local.get("SONARQUBE_TOKEN") or ensure_token(project_key=args.project_key)
+    ctx_name = args.context
+    row = store.upsert_workspace(
+        args.workspace, project_key=args.project_key, context_name=ctx_name
+    )
+    if ctx_name:
+        store.upsert_context(ctx_name, project_key=args.project_key)
+    if args.local or (ctx_name == "local"):
+        from context_resolve import resolve_creds as _rc
+
+        creds = _rc(context=ctx_name or "local", prefer_local=True, project_key=args.project_key)
         update_local_credentials(
-            local.get("SONARQUBE_URL") or DEFAULT_LOCAL_URL,
-            token,
+            creds.url or DEFAULT_LOCAL_URL,
+            creds.token,
             project_key=args.project_key,
         )
     if args.json:
         print(json.dumps(row, indent=2))
     else:
-        print(f"Bound {args.workspace} -> {args.project_key}")
+        extra = f" context={ctx_name}" if ctx_name else ""
+        print(f"Bound {args.workspace} -> {args.project_key}{extra}")
     return 0
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--local", action="store_true", help="Force local SonarQube (127.0.0.1:9000)")
+    parser.add_argument("--context", help="Named analysis context")
     parser.add_argument("--json", action="store_true")
     sub = parser.add_subparsers(dest="cmd", required=True)
 

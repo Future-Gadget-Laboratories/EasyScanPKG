@@ -31,6 +31,8 @@ REQUIRED_BIN = (
     "sonar-scan",
     "sonar-issues",
     "sonar-project",
+    "sonar-context",
+    "sonar-profile",
     "sonar-desktop",
     "easyscan-check",
     "install-skills.sh",
@@ -298,6 +300,58 @@ def check_desktop(report: CheckReport) -> None:
         )
 
 
+def check_active_context(report: CheckReport) -> None:
+    try:
+        from context_resolve import ensure_default_contexts
+
+        store = ensure_default_contexts()
+        active = store.get_active_context_name()
+        contexts = store.list_contexts()
+        if active:
+            report.add(
+                CheckItem(
+                    "active_context",
+                    True,
+                    "soft",
+                    f"active={active} ({len(contexts)} registered)",
+                )
+            )
+        else:
+            report.add(
+                CheckItem(
+                    "active_context",
+                    True,
+                    "soft",
+                    f"no active context yet ({len(contexts)} registered) — run sonar-context use",
+                )
+            )
+    except Exception as exc:  # noqa: BLE001
+        report.add(CheckItem("active_context", False, "soft", str(exc)))
+
+
+def check_issue_checklist(report: CheckReport, root: Path) -> None:
+    checklist = root / ".sft" / "issue-checklist.md"
+    twin = root / ".sft" / "issue-checklist.json"
+    if checklist.is_file():
+        detail = str(checklist)
+        if twin.is_file():
+            try:
+                data = json.loads(twin.read_text(encoding="utf-8"))
+                detail += f" open_count={data.get('open_count')} resolved={data.get('resolved')}"
+            except json.JSONDecodeError:
+                detail += " (json unreadable)"
+        report.add(CheckItem("issue_checklist", True, "soft", detail))
+    else:
+        report.add(
+            CheckItem(
+                "issue_checklist",
+                True,
+                "soft",
+                "no workspace checklist yet — run sonar-issues export --workspace …",
+            )
+        )
+
+
 def check_unit_tests(report: CheckReport, root: Path, *, skip_tests: bool) -> None:
     if skip_tests:
         report.add(CheckItem("unit_tests", True, "soft", "skipped"))
@@ -362,6 +416,8 @@ def run_checks(
     if not quick:
         check_ide_extension(report)
         check_desktop(report)
+        check_active_context(report)
+        check_issue_checklist(report, root)
         check_unit_tests(report, root, skip_tests=skip_tests or offline or quick)
     return report
 

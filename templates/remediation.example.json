@@ -1,0 +1,21 @@
+{
+  "schema": "easyscan.remediation/v1",
+  "description": "Optional agent hints keyed by Sonar rule id (companion to quality profile XML).",
+  "rules": {
+    "python:S3776": {
+      "summary": "Reduce cognitive complexity",
+      "guidance": [
+        "Extract helpers for nested branches",
+        "Prefer early returns over deep nesting",
+        "Split multi-responsibility functions"
+      ]
+    },
+    "python:S1192": {
+      "summary": "Deduplicate string literals",
+      "guidance": [
+        "Introduce a named constant near first use",
+        "Avoid magic path/glob strings repeated 3+ times"
+      ]
+    }
+  }
+}

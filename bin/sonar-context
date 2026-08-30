@@ -1,0 +1,281 @@
+#!/usr/bin/env python3
+"""Manage named EasyScanPKG analysis contexts (multi-project / multi-server)."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _bootstrap import bootstrap
+
+bootstrap()
+
+from context_resolve import (  # noqa: E402
+    context_env_exports,
+    default_token_ref_for_url,
+    ensure_default_contexts,
+)
+from env_write import LOCAL_ENV  # noqa: E402
+from local_server import DEFAULT_LOCAL_URL  # noqa: E402
+from policy_db import resolve_store  # noqa: E402
+
+
+def _print_ctx(ctx, *, json_mode: bool) -> None:
+    if json_mode:
+        print(
+            json.dumps(
+                {
+                    "name": ctx.name,
+                    "url": ctx.url,
+                    "token_ref": ctx.token_ref,
+                    "org": ctx.org,
+                    "project_key": ctx.project_key,
+                    "tags": ctx.tags or [],
+                    "remediation_path": ctx.remediation_path,
+                    "volume_namespace": ctx.volume_namespace,
+                    "active": ctx.active,
+                },
+                indent=2,
+            )
+        )
+        return
+    mark = "*" if ctx.active else " "
+    tags = ",".join(ctx.tags or []) or "-"
+    print(
+        f"{mark} {ctx.name}\turl={ctx.url or '-'}\t"
+        f"project={ctx.project_key or '-'}\ttags={tags}"
+    )
+
+
+def cmd_list(args: argparse.Namespace) -> int:
+    store = ensure_default_contexts()
+    rows = store.list_contexts()
+    if args.json:
+        print(
+            json.dumps(
+                {
+                    "active": store.get_active_context_name(),
+                    "contexts": [
+                        {
+                            "name": c.name,
+                            "url": c.url,
+                            "token_ref": c.token_ref,
+                            "org": c.org,
+                            "project_key": c.project_key,
+                            "tags": c.tags or [],
+                            "remediation_path": c.remediation_path,
+                            "volume_namespace": c.volume_namespace,
+                            "active": c.active,
+                        }
+                        for c in rows
+                    ],
+                },
+                indent=2,
+            )
+        )
+        return 0
+    active = store.get_active_context_name()
+    print(f"Active context: {active or '(none)'}")
+    for ctx in rows:
+        _print_ctx(ctx, json_mode=False)
+    return 0
+
+
+def cmd_show(args: argparse.Namespace) -> int:
+    store = ensure_default_contexts()
+    ctx = store.get_context(args.name)
+    if ctx is None:
+        print(f"unknown context: {args.name}", file=sys.stderr)
+        return 1
+    profiles = store.list_context_profiles(ctx.name)
+    if args.json:
+        payload = {
+            "context": {
+                "name": ctx.name,
+                "url": ctx.url,
+                "token_ref": ctx.token_ref,
+                "org": ctx.org,
+                "project_key": ctx.project_key,
+                "tags": ctx.tags or [],
+                "remediation_path": ctx.remediation_path,
+                "volume_namespace": ctx.volume_namespace,
+                "active": ctx.active,
+            },
+            "profiles": [
+                {
+                    "language": p.language,
+                    "profile_name": p.profile_name,
+                    "profile_key": p.profile_key,
+                    "is_default": p.is_default,
+                }
+                for p in profiles
+            ],
+        }
+        print(json.dumps(payload, indent=2))
+        return 0
+    _print_ctx(ctx, json_mode=False)
+    print(f"  token_ref: {ctx.token_ref}")
+    print(f"  org: {ctx.org or '-'}")
+    print(f"  remediation: {ctx.remediation_path or '-'}")
+    print(f"  volume_namespace: {ctx.volume_namespace or '-'}")
+    if profiles:
+        print("  profiles:")
+        for p in profiles:
+            d = " (default)" if p.is_default else ""
+            print(f"    {p.language}: {p.profile_name}{d}")
+    return 0
+
+
+def cmd_create(args: argparse.Namespace) -> int:
+    store = ensure_default_contexts()
+    url = args.url or DEFAULT_LOCAL_URL
+    token_ref = args.token_ref or default_token_ref_for_url(url)
+    tags = [t.strip() for t in (args.tag or []) if t.strip()]
+    if args.gh:
+        tags.append(f"gh:{args.gh}")
+    try:
+        ctx = store.upsert_context(
+            args.name,
+            url=url,
+            token_ref=token_ref,
+            org=args.org,
+            project_key=args.project_key,
+            tags=tags or None,
+            remediation_path=args.remediation,
+            volume_namespace=args.volume_namespace,
+            activate=bool(args.use),
+        )
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    store.record_event("context.create", {"name": ctx.name, "url": ctx.url, "tags": ctx.tags})
+    if args.json:
+        _print_ctx(ctx, json_mode=True)
+    else:
+        print(f"Created context: {ctx.name}")
+        _print_ctx(ctx, json_mode=False)
+    return 0
+
+
+def cmd_use(args: argparse.Namespace) -> int:
+    store = ensure_default_contexts()
+    try:
+        ctx = store.use_context(args.name)
+    except KeyError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    store.record_event("context.use", {"name": ctx.name})
+    if args.export_env:
+        # stdout is machine-readable for `eval "$(sonar-context use X --export-env)"`
+        for key, value in context_env_exports(ctx).items():
+            print(f"export {key}={json.dumps(value)}")
+        print(f"Active context: {ctx.name}", file=sys.stderr)
+        return 0
+    if args.json:
+        _print_ctx(ctx, json_mode=True)
+    else:
+        print(f"Active context: {ctx.name}")
+    return 0
+
+
+def cmd_bind(args: argparse.Namespace) -> int:
+    store = ensure_default_contexts()
+    ctx = store.get_context(args.name)
+    if ctx is None:
+        print(f"unknown context: {args.name}", file=sys.stderr)
+        return 1
+    project_key = args.project_key or ctx.project_key
+    if not project_key:
+        print("Need --project-key (or set it on the context)", file=sys.stderr)
+        return 2
+    if args.project_key:
+        ctx = store.upsert_context(args.name, project_key=args.project_key)
+    row = store.upsert_workspace(
+        args.workspace, project_key=project_key, context_name=args.name
+    )
+    if args.use:
+        store.use_context(args.name)
+    if args.json:
+        print(json.dumps({"context": args.name, "workspace": row}, indent=2))
+    else:
+        print(f"Bound {args.workspace} -> context={args.name} project={project_key}")
+    return 0
+
+
+def cmd_delete(args: argparse.Namespace) -> int:
+    store = ensure_default_contexts()
+    if args.name in ("local", "remote") and not args.force:
+        print("Refusing to delete built-in context without --force", file=sys.stderr)
+        return 2
+    if store.get_context(args.name) is None:
+        print(f"unknown context: {args.name}", file=sys.stderr)
+        return 1
+    store.delete_context(args.name)
+    print(f"Deleted context: {args.name}")
+    return 0
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--json", action="store_true")
+    sub = parser.add_subparsers(dest="cmd", required=True)
+
+    sub.add_parser("list", help="List contexts (* = active)")
+
+    p_show = sub.add_parser("show", help="Show one context + bound profiles")
+    p_show.add_argument("name")
+
+    p_create = sub.add_parser("create", help="Create or update a named context")
+    p_create.add_argument("name")
+    p_create.add_argument("--url", help=f"Sonar URL (default {DEFAULT_LOCAL_URL})")
+    p_create.add_argument(
+        "--token-ref",
+        help=f"Path to env/token file or env:VAR (default {LOCAL_ENV} for local URLs)",
+    )
+    p_create.add_argument("--org")
+    p_create.add_argument("--project-key")
+    p_create.add_argument("--tag", action="append", help="Tag (repeatable), e.g. team:payments")
+    p_create.add_argument("--gh", help="GitHub slug tag shorthand → gh:org/repo")
+    p_create.add_argument("--remediation", help="Optional *.remediation.json sidecar path")
+    p_create.add_argument("--volume-namespace", help="Optional local volume namespace tag")
+    p_create.add_argument("--use", action="store_true", help="Activate after create")
+
+    p_use = sub.add_parser("use", help="Set the active context")
+    p_use.add_argument("name")
+    p_use.add_argument(
+        "--export-env",
+        action="store_true",
+        help="Print shell exports for SONARQUBE_* (includes token)",
+    )
+
+    p_bind = sub.add_parser("bind", help="Bind a workspace path to a context + project key")
+    p_bind.add_argument("name")
+    p_bind.add_argument("workspace")
+    p_bind.add_argument("--project-key")
+    p_bind.add_argument("--use", action="store_true")
+
+    p_del = sub.add_parser("delete", help="Delete a context")
+    p_del.add_argument("name")
+    p_del.add_argument("--force", action="store_true")
+
+    args = parser.parse_args()
+    if args.cmd == "list":
+        return cmd_list(args)
+    if args.cmd == "show":
+        return cmd_show(args)
+    if args.cmd == "create":
+        return cmd_create(args)
+    if args.cmd == "use":
+        return cmd_use(args)
+    if args.cmd == "bind":
+        return cmd_bind(args)
+    if args.cmd == "delete":
+        return cmd_delete(args)
+    return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
