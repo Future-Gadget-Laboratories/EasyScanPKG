@@ -180,12 +180,14 @@ Prefer **code fixes**. Use `falsepositive` / `wontfix` / `accept` only with rati
 | Language | On local Community image? | Notes |
 | --- | --- | --- |
 | Python / JS / TS / Java / C# / Go / … | Yes | Use `sonar-scan` |
-| **C / C++ / Objective-C** | **Usually no** | Needs CFamily (Developer+ / Cloud). Build Wrapper is not vendored. |
+| **C / C++** | **Yes via sonar-cxx** | Auto-installed on `sonar-local-up` from SonarOpenCommunity/sonar-cxx (`cxx` language). Not commercial CFamily/Build Wrapper. `sonar-languages --install-cxx` to force. Disable: `SFT_INSTALL_SONAR_CXX=0`. |
+| **Objective-C** | **No** | Needs commercial CFamily |
 | **Assembly (.s/.asm)** | **No** | No first-party analyzer |
 | **Julia** | **No** | No official Sonar plugin |
 
 ```bash
 "$BRIDGE/bin/sonar-languages" --json
+"$BRIDGE/bin/sonar-languages" --local --install-cxx
 ```
 
 ## Agent workflow

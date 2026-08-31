@@ -1,4 +1,4 @@
-"""Detect SonarQube language analyzer capabilities (CFamily, etc.)."""
+"""Detect SonarQube language analyzer capabilities (CFamily, sonar-cxx, etc.)."""
 
 from __future__ import annotations
 
@@ -15,11 +15,13 @@ class LanguageSupport:
     languages: list[str]
     has_c: bool
     has_cpp: bool
+    has_cxx: bool
     has_objc: bool
     has_julia: bool
     has_assembly: bool
     build_wrapper_url: str | None
     cfamily_available: bool
+    sonar_cxx_available: bool
     notes: list[str]
 
 
@@ -44,6 +46,7 @@ def probe_language_support(url: str, token: str | None = None) -> LanguageSuppor
     keys = set(languages)
     has_c = "c" in keys
     has_cpp = "cpp" in keys
+    has_cxx = "cxx" in keys
     has_objc = "objc" in keys or "objectivec" in keys
     has_julia = "julia" in keys
     has_assembly = any(k in keys for k in ("asm", "assembly", "s", "nasm"))
@@ -58,16 +61,28 @@ def probe_language_support(url: str, token: str | None = None) -> LanguageSuppor
         bw_ok = False
 
     notes: list[str] = []
+    if has_cxx:
+        notes.append(
+            "Community C/C++ via SonarOpenCommunity/sonar-cxx (language key `cxx`). "
+            "Enable sonar.cxx.file.suffixes and a quality profile with active rules "
+            "(EasyScan bootstraps these on sonar-local-up). External analyzers "
+            "(cppcheck, clang-tidy, …) can feed findings via sonar.cxx.*.reportPaths."
+        )
     if not cfamily:
         notes.append(
-            "C/C++/Objective-C (CFamily) is not in this SonarQube edition/image. "
-            "Community `sonarqube:community` often lacks it; use Developer+ Server, "
-            "SonarCloud, or SonarQube for IDE C/C++ connected mode where licensed."
+            "Commercial CFamily (languages c/cpp/objc + Build Wrapper) is not in this "
+            "SonarQube edition/image. Community `sonarqube:community` uses sonar-cxx "
+            "instead when installed; Developer+ Server / SonarCloud ship CFamily."
         )
     else:
         notes.append(
             "CFamily present. Prefer AutoConfig for quick scans, or Build Wrapper / "
             "compile_commands.json for highest accuracy."
+        )
+    if not has_cxx and not cfamily:
+        notes.append(
+            "No C/C++ analyzer detected. On local Community, run sonar-local-up "
+            "(auto-installs sonar-cxx) or: sonar-languages --local --install-cxx"
         )
     if not has_julia:
         notes.append(
@@ -85,11 +100,13 @@ def probe_language_support(url: str, token: str | None = None) -> LanguageSuppor
         languages=sorted(keys),
         has_c=has_c,
         has_cpp=has_cpp,
+        has_cxx=has_cxx,
         has_objc=has_objc,
         has_julia=has_julia,
         has_assembly=has_assembly,
         build_wrapper_url=bw if bw_ok else None,
         cfamily_available=cfamily,
+        sonar_cxx_available=has_cxx,
         notes=notes,
     )
 

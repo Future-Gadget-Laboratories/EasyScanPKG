@@ -32,10 +32,12 @@ class LanguageSupportTests(unittest.TestCase):
         mock_urlopen.side_effect = side_effect
         support = probe_language_support("http://127.0.0.1:9000", "tok")
         self.assertFalse(support.cfamily_available)
+        self.assertFalse(support.sonar_cxx_available)
+        self.assertFalse(support.has_cxx)
         self.assertFalse(support.has_julia)
         self.assertFalse(support.has_assembly)
         self.assertIsNone(support.build_wrapper_url)
-        self.assertTrue(any("C/C++" in n for n in support.notes))
+        self.assertTrue(any("C/C++" in n or "CFamily" in n for n in support.notes))
         self.assertTrue(any("Julia" in n for n in support.notes))
         self.assertTrue(any("Assembly" in n for n in support.notes))
 

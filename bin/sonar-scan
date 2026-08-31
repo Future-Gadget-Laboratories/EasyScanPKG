@@ -14,6 +14,10 @@ PROJECT_KEY=""
 COMPILE_COMMANDS=""
 CONTEXT=""
 EXAMPLE_WS="${EASYSCAN_EXAMPLE_WS:-}"
+# Default exclusions target application workspaces (hide build bins/tests).
+# Override with --exclusions when dogfooding EasyScanPKG itself (include bin/).
+DEFAULT_EXCLUSIONS="**/bin/**,**/obj/**,**/node_modules/**,**/.git/**,**/__pycache__/**,**/.venv/**,**/tests/**,**/testing/**,**/fixtures/**"
+EXCLUSIONS="$DEFAULT_EXCLUSIONS"
 
 usage() {
   cat <<EOF
@@ -23,11 +27,13 @@ Usage: $(basename "$0") [options]
   --sources CSV               Relative source dirs (default: .)
   --project-key KEY           Override project key (default: from context / sonar-local.env)
   --context NAME              Named analysis context (sonar-context)
+  --exclusions CSV            Override sonar.exclusions (default hides **/bin/**,**/tests/**,…)
   --compile-commands PATH     Relative path to compile_commands.json (CFamily Compilation DB mode)
 
 Scans with sonarsource/sonar-scanner-cli over Docker --network=host.
-Community Build analyzes Python/JS/Java/… well. C/C++ requires a Sonar edition
-with CFamily (see sonar-languages). Assembly and Julia are not supported by Sonar.
+Community Build analyzes Python/JS/Java/… well. Local C/C++ uses the community
+sonar-cxx plugin (see sonar-languages); commercial CFamily/Build Wrapper is separate.
+Assembly and Julia are not supported by Sonar.
 EOF
 }
 
@@ -37,6 +43,7 @@ while [[ $# -gt 0 ]]; do
     --sources) SOURCES="$2"; shift 2 ;;
     --project-key) PROJECT_KEY="$2"; shift 2 ;;
     --context) CONTEXT="$2"; shift 2 ;;
+    --exclusions) EXCLUSIONS="$2"; shift 2 ;;
     --compile-commands) COMPILE_COMMANDS="$2"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Unknown option: $1" >&2; usage; exit 2 ;;
@@ -89,6 +96,7 @@ echo "    url=$SONARQUBE_URL"
 echo "    key=$PROJECT_KEY"
 echo "    workspace=$WORKSPACE"
 echo "    sources=$SOURCES"
+echo "    exclusions=$EXCLUSIONS"
 
 # Create project if missing (ignore errors)
 python3 - <<PY || true
@@ -118,7 +126,7 @@ SCANNER_ARGS=(
   -Dsonar.tests=
   -Dsonar.test.inclusions=
   -Dsonar.sourceEncoding=UTF-8
-  -Dsonar.exclusions="**/bin/**,**/obj/**,**/node_modules/**,**/.git/**,**/__pycache__/**,**/.venv/**,**/tests/**,**/testing/**,**/fixtures/**"
+  -Dsonar.exclusions="$EXCLUSIONS"
   -Dsonar.coverage.exclusions="**/*"
   -Dsonar.coverageReportPaths=
   -Dsonar.cfamily.compile-commands=

@@ -270,6 +270,17 @@ def start(*, wait: bool = True) -> LocalServerStatus:
         raise RuntimeError((result.stderr or result.stdout or "compose up failed")[-500:])
     if wait and not wait_for_system_up(DEFAULT_LOCAL_URL):
         raise RuntimeError(f"local SonarQube did not become UP at {DEFAULT_LOCAL_URL}")
+    # Community C/C++ via SonarOpenCommunity/sonar-cxx (optional; default on).
+    try:
+        from sonar_cxx_plugin import ensure_cxx_plugin, install_sonar_cxx_enabled
+
+        if install_sonar_cxx_enabled():
+            cxx = ensure_cxx_plugin(url=DEFAULT_LOCAL_URL)
+            if not cxx.ok:
+                # Soft-fail: local stack is still usable without cxx.
+                print(f"NOTE: sonar-cxx install: {cxx.detail}", flush=True)
+    except Exception as exc:  # noqa: BLE001 — never block local-up on plugin issues
+        print(f"NOTE: sonar-cxx install skipped: {exc}", flush=True)
     return status()
 
 

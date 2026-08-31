@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Probe SonarQube language support; optionally install CFamily build-wrapper."""
+"""Probe SonarQube language support; optionally install CFamily build-wrapper or sonar-cxx."""
 
 from __future__ import annotations
 
@@ -27,7 +27,12 @@ def main() -> int:
     parser.add_argument(
         "--install-build-wrapper",
         action="store_true",
-        help="Download build-wrapper into ~/.config/sft/build-wrapper when available",
+        help="Download build-wrapper into ~/.config/sft/build-wrapper when available (CFamily only)",
+    )
+    parser.add_argument(
+        "--install-cxx",
+        action="store_true",
+        help="Download/install SonarOpenCommunity/sonar-cxx into the local Community stack",
     )
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
@@ -39,32 +44,58 @@ def main() -> int:
         url = local.get("SONARQUBE_URL") or DEFAULT_LOCAL_URL
     token = os.environ.get("SONARQUBE_TOKEN") or local.get("SONARQUBE_TOKEN")
 
+    cxx_install = None
+    if args.install_cxx:
+        from sonar_cxx_plugin import ensure_cxx_plugin  # noqa: E402
+
+        cxx_install = ensure_cxx_plugin(url=url, force=True, bootstrap_profile=True)
+        if not cxx_install.ok:
+            print(f"sonar-cxx install failed: {cxx_install.detail}", file=sys.stderr)
+
     support = probe_language_support(url, token)
     bw_path = None
     if args.install_build_wrapper:
         dest = Path.home() / ".config" / "sft" / "build-wrapper"
         bw_path = install_build_wrapper(url, dest)
         if bw_path is None:
-            print("Build Wrapper not available on this server (no CFamily static assets)", file=sys.stderr)
+            print(
+                "Build Wrapper not available on this server (no CFamily static assets)",
+                file=sys.stderr,
+            )
 
     payload = support_as_dict(support)
     if bw_path is not None:
         payload["build_wrapper_installed"] = str(bw_path)
+    if cxx_install is not None:
+        payload["sonar_cxx_install"] = {
+            "ok": cxx_install.ok,
+            "detail": cxx_install.detail,
+            "jar_name": cxx_install.jar_name,
+            "tag": cxx_install.tag,
+            "profile": cxx_install.profile,
+            "restarted": cxx_install.restarted,
+        }
 
     if args.json:
         print(json.dumps(payload, indent=2))
-        return 0
+        return 0 if (cxx_install is None or cxx_install.ok) else 1
 
     print(f"Server: {support.url}")
     print(f"Languages ({len(support.languages)}): {', '.join(support.languages)}")
     print(f"CFamily (C/C++/ObjC): {support.cfamily_available}")
+    print(f"sonar-cxx (Community CXX): {support.sonar_cxx_available}")
     print(f"Julia: {support.has_julia}   Assembly: {support.has_assembly}")
     print(f"Build Wrapper URL: {support.build_wrapper_url or 'not available'}")
     if bw_path:
         print(f"Build Wrapper binary: {bw_path}")
+    if cxx_install is not None:
+        print(
+            f"sonar-cxx install: ok={cxx_install.ok} detail={cxx_install.detail} "
+            f"jar={cxx_install.jar_name} profile={cxx_install.profile}"
+        )
     for note in support.notes:
         print(f"- {note}")
-    return 0
+    return 0 if (cxx_install is None or cxx_install.ok) else 1
 
 
 if __name__ == "__main__":
