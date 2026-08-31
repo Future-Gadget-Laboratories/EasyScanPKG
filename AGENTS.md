@@ -1,0 +1,59 @@
+# AGENTS.md
+
+EasyScanPKG is a Bash + Python (stdlib-only) helper toolkit that wires a local
+(or remote) **SonarQube** server into Cursor/Codex: it spins up a local
+SonarQube Community + PostgreSQL Docker stack, bootstraps tokens, runs the
+SonarScanner CLI, and exports an agent-ingestible issue checklist.
+
+Standard dev commands are documented in `README.md` and `CONTRIBUTING.md`:
+- Unit tests: `python3 -m unittest discover -s tests -v`
+- Offline readiness/lint: `./bin/easyscan-check --offline`
+- Full readiness: `./bin/easyscan-check` (needs Docker + local server)
+
+## Cursor Cloud specific instructions
+
+- **Python is stdlib-only.** There are no pip/npm dependencies to install. Unit
+  tests (`python3 -m unittest discover -s tests -v`) and the offline check
+  (`./bin/easyscan-check --offline --skip-tests`) run with just Python 3 and no
+  Docker — this is the fastest inner dev loop and mirrors CI (`.github/workflows/ci.yml`).
+
+- **Docker is pre-installed in the environment but the daemon is NOT running on
+  startup** (this VM has no systemd). The full end-to-end flow (local SonarQube
+  stack, scanner, MCP) needs Docker, so before running `sonar-local-up`,
+  `sonar-scan`, `easyscan-check --require-local`, etc., start the daemon and set
+  the Elasticsearch kernel setting SonarQube requires:
+  - `sudo sysctl -w vm.max_map_count=262144`  (resets on reboot; required or the
+    SonarQube container's Elasticsearch will fail to start)
+  - Start `dockerd` in the background (e.g. in a tmux session): `sudo dockerd`
+  - If `docker` needs sudo, either run as the `docker` group or
+    `sudo chmod 666 /var/run/docker.sock` (the `ubuntu` user is already in the
+    `docker` group; a fresh login/`newgrp docker` also works).
+  - Docker is configured with the `fuse-overlayfs` storage driver and
+    `containerd-snapshotter=false` in `/etc/docker/daemon.json` — this
+    combination is required for Docker to run inside this VM. Do not remove it.
+
+- **Local SonarQube lifecycle:** `./bin/sonar-local-up` starts the
+  `sft-sonarqube` + `sft-sonarqube-db` containers (compose file at
+  `docker/docker-compose.sonar-local.yml`), waits for the server to be UP on
+  `http://127.0.0.1:9000`, and auto-mints an admin token into
+  `~/.config/sft/sonar-local.env`. First boot takes ~40s after images are pulled.
+  Stop with `./bin/sonar-local-down`. The generated local admin password is
+  stored in `~/.config/sft/sonar-local-admin.json`.
+
+- **Docker images** (`sonarqube:community`, `postgres:16-alpine`,
+  `sonarsource/sonar-scanner-cli`, `sonarsource/sonarqube-mcp`) are pulled at
+  runtime and cached in the VM image. If a fresh pod is missing them, they will
+  be re-pulled automatically on first use (needs Docker Hub network access).
+
+- **Run a scan (core flow):**
+  `./bin/sonar-scan --workspace <PROJECT> --sources <dirs> --project-key <key>`
+  runs the scanner over Docker `--network=host`, then
+  `./bin/sonar-issues --local list --project-key <key>` /
+  `./bin/sonar-issues --local export --workspace <PROJECT> --refresh` produces
+  `.sft/issue-checklist.md`. Note: `sonar-scan`'s own post-scan issue printout
+  can read `0` due to a brief server indexing delay even when the analysis
+  succeeded — re-query with `sonar-issues list` to see the real results.
+
+- Config/state lives under `~/.config/sft/` (not in the repo) and is not
+  committed. Secret files (`sonar.env`, `sonar-local.env`,
+  `sonar-local-admin.json`) must never be committed.
