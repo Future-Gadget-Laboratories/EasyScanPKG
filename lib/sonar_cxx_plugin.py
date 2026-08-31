@@ -33,12 +33,13 @@ DEFAULT_CXX_URL = (
     f"https://github.com/SonarOpenCommunity/sonar-cxx/releases/download/"
     f"{DEFAULT_CXX_TAG}/{DEFAULT_CXX_JAR}"
 )
+SETTING_CXX_FILE_SUFFIXES = "sonar.cxx.file.suffixes"
 
 # Map major.minor Community Build / Server version prefixes → release tag.
 # Falls back to DEFAULT_CXX_TAG when no entry matches.
 COMPATIBILITY: list[tuple[str, str]] = [
-    ("26.", "cxx-2.3.0"),
-    ("25.8", "cxx-2.3.0"),
+    ("26.", DEFAULT_CXX_TAG),
+    ("25.8", DEFAULT_CXX_TAG),
     ("25.", "cxx-2.2.1"),
     ("24.", "cxx-2.1.1"),
     ("10.", "cxx-2.1.1"),
@@ -258,28 +259,20 @@ def _admin_token() -> str:
 
 def configure_cxx_file_suffixes(url: str, token: str, suffixes: str = DEFAULT_CXX_SUFFIXES) -> None:
     """Enable the cxx language sensor (disabled by default with suffixes=-)."""
-    # Sonar settings API accepts multi-value via repeated values= or a CSV value.
     values = [s.strip() for s in suffixes.split(",") if s.strip()]
-    # Try multi-value form first
-    form: dict[str, Any] = {"key": "sonar.cxx.file.suffixes"}
-    # urlencode with multiple values needs special handling — use query style via api
-    query = [("key", "sonar.cxx.file.suffixes")]
-    for v in values:
-        query.append(("values", v))
-    # Fall back: single CSV value
     code, body = api(
         url,
         token,
         "POST",
         "/api/settings/set",
-        form={"key": "sonar.cxx.file.suffixes", "value": suffixes},
+        form={"key": SETTING_CXX_FILE_SUFFIXES, "value": suffixes},
     )
     if code not in (200, 204):
-        # Retry with values as JSON array field if supported
-        code2, body2 = _settings_set_multi(url, token, "sonar.cxx.file.suffixes", values)
+        code2, body2 = _settings_set_multi(url, token, SETTING_CXX_FILE_SUFFIXES, values)
         if code2 not in (200, 204):
             raise RuntimeError(
-                f"failed to set sonar.cxx.file.suffixes: HTTP {code} {body!r} / {code2} {body2!r}"
+                f"failed to set {SETTING_CXX_FILE_SUFFIXES}: "
+                f"HTTP {code} {body!r} / {code2} {body2!r}"
             )
 
 
@@ -337,59 +330,65 @@ def _copy_profile(url: str, token: str, from_key: str, to_name: str) -> dict | N
     return _find_profile(url, token, "cxx", to_name)
 
 
+def _activate_rules_page(
+    url: str, token: str, profile_key: str, page: int
+) -> tuple[int, int]:
+    """Activate one page of built-in cxx rules. Returns (activated, total)."""
+    code, data = api(
+        url,
+        token,
+        "GET",
+        "/api/rules/search",
+        query={
+            "languages": "cxx",
+            "repositories": ",".join(BUILTIN_CXX_REPOS),
+            "ps": 500,
+            "p": page,
+        },
+    )
+    if code != 200 or not isinstance(data, dict):
+        return 0, 0
+    activated = 0
+    for rule in data.get("rules", []):
+        key = rule.get("key")
+        if not key or rule.get("isTemplate"):
+            continue
+        acode, _ = api(
+            url,
+            token,
+            "POST",
+            "/api/qualityprofiles/activate_rule",
+            form={"key": profile_key, "rule": key},
+        )
+        if acode in (200, 204):
+            activated += 1
+    return activated, int(data.get("total", 0))
+
+
 def _activate_builtin_cxx_rules(url: str, token: str, profile_key: str) -> int:
     """Activate built-in cxx repository rules on the profile. Returns count activated."""
     activated = 0
     page = 1
     while True:
-        code, data = api(
-            url,
-            token,
-            "GET",
-            "/api/rules/search",
-            query={
-                "languages": "cxx",
-                "repositories": ",".join(BUILTIN_CXX_REPOS),
-                "ps": 500,
-                "p": page,
-            },
-        )
-        if code != 200 or not isinstance(data, dict):
-            break
-        rules = data.get("rules", [])
-        if not rules:
-            break
-        for rule in rules:
-            key = rule.get("key")
-            if not key:
-                continue
-            # Skip if already template-only without activation purpose
-            if rule.get("isTemplate"):
-                continue
-            acode, _ = api(
-                url,
-                token,
-                "POST",
-                "/api/qualityprofiles/activate_rule",
-                form={"key": profile_key, "rule": key},
-            )
-            if acode in (200, 204):
-                activated += 1
-        total = int(data.get("total", 0))
-        if page * 500 >= total:
+        page_count, total = _activate_rules_page(url, token, profile_key, page)
+        activated += page_count
+        if total == 0 or page * 500 >= total:
             break
         page += 1
     return activated
 
 
-def _set_default_profile(url: str, token: str, profile_key: str) -> None:
-    api(
+def _set_default_profile(url: str, token: str, *, language: str, profile_name: str) -> None:
+    # SonarQube expects language + qualityProfile (name), not profile key alone.
+    code, body = api(
         url,
         token,
         "POST",
         "/api/qualityprofiles/set_default",
-        form={"key": profile_key},
+        form={"language": language, "qualityProfile": profile_name},
     )
+    if code not in (200, 204):
+        raise RuntimeError(f"set_default failed: HTTP {code} {body!r}")
 
 
 def bootstrap_cxx_quality_profile(
@@ -400,7 +399,6 @@ def bootstrap_cxx_quality_profile(
     base = url.rstrip("/")
     sonar_way = _find_profile(base, tok, "cxx", "Sonar way")
     if not sonar_way or not sonar_way.get("key"):
-        # Profile may appear under different name
         code, data = api(
             base, tok, "GET", "/api/qualityprofiles/search", query={"language": "cxx"}
         )
@@ -412,8 +410,16 @@ def bootstrap_cxx_quality_profile(
     if not profile or not profile.get("key"):
         return None
     _activate_builtin_cxx_rules(base, tok, profile["key"])
-    _set_default_profile(base, tok, profile["key"])
-    return profile.get("name") or EASYSCAN_CXX_PROFILE
+    name = profile.get("name") or EASYSCAN_CXX_PROFILE
+    _set_default_profile(base, tok, language="cxx", profile_name=name)
+    return name
+
+
+def _configure_cxx_runtime(url: str, token: str, *, bootstrap_profile: bool) -> str | None:
+    configure_cxx_file_suffixes(url, token)
+    if bootstrap_profile:
+        return bootstrap_cxx_quality_profile(url, token)
+    return None
 
 
 def ensure_cxx_plugin(
@@ -434,7 +440,7 @@ def ensure_cxx_plugin(
     version = fetch_server_version(url)
     try:
         plugin_url, jar_name, tag = resolve_plugin_url(version)
-    except (OSError, RuntimeError, ValueError, json.JSONDecodeError) as exc:
+    except (OSError, RuntimeError, ValueError) as exc:
         return CxxInstallResult(ok=False, detail=f"resolve failed: {exc}")
 
     if not is_plugin_jar_name(jar_name):
@@ -445,13 +451,9 @@ def ensure_cxx_plugin(
     has = language_has_cxx(url)
 
     if already and has and not force:
-        # Still ensure suffixes + profile
         try:
             token = _admin_token()
-            configure_cxx_file_suffixes(url, token)
-            profile = (
-                bootstrap_cxx_quality_profile(url, token) if bootstrap_profile else None
-            )
+            profile = _configure_cxx_runtime(url, token, bootstrap_profile=bootstrap_profile)
             return CxxInstallResult(
                 ok=True,
                 detail="already installed",
@@ -477,10 +479,7 @@ def ensure_cxx_plugin(
             _restart_sonarqube(wait=True)
             restarted = True
         token = _admin_token()
-        configure_cxx_file_suffixes(url, token)
-        profile = None
-        if bootstrap_profile:
-            profile = bootstrap_cxx_quality_profile(url, token)
+        profile = _configure_cxx_runtime(url, token, bootstrap_profile=bootstrap_profile)
         has = language_has_cxx(url, token)
         if not has:
             return CxxInstallResult(

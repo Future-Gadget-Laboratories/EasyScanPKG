@@ -6,8 +6,8 @@
 **JSON twin:** `<workspace>/.sft/issue-checklist.json`  
 **Remediation hints:** [`templates/remediation.easyscanpkg.json`](../templates/remediation.easyscanpkg.json)
 
-Last exported scan (lib + bin + hooks): **48 open**  
-(1 BLOCKER, 15 CRITICAL, 15 MAJOR, 17 MINOR)
+Last exported scan (lib + bin + hooks): **1 open**  
+(0 BLOCKER, 1 CRITICAL, 0 MAJOR, 0 MINOR) — 2026-08-31
 
 ## How agents should fix
 
@@ -20,10 +20,11 @@ Last exported scan (lib + bin + hooks): **48 open**
 3. Work **unchecked** items in severity order: BLOCKER → CRITICAL → MAJOR → MINOR.
 4. For each item, open `file:line`, apply guidance from the remediation JSON for that `rule`.
 5. Prefer **code fixes**. Use `sonar-issues resolve` only with documented rationale.
-6. After a batch of fixes:
+6. After a batch of fixes (note `--exclusions` so `bin/` is analyzed — stock default hides it):
    ```bash
    "$BRIDGE/bin/sonar-scan" --workspace "$PWD" --sources lib,bin,hooks \
-     --project-key local-easyscanpkg
+     --project-key local-easyscanpkg \
+     --exclusions '**/obj/**,**/node_modules/**,**/.git/**,**/__pycache__/**,**/.venv/**'
    "$BRIDGE/bin/sonar-issues" --local export --workspace "$PWD" \
      --project-key local-easyscanpkg --refresh
    ```
@@ -33,22 +34,16 @@ Last exported scan (lib + bin + hooks): **48 open**
 
 | Priority | Count | Focus |
 | --- | ---: | --- |
-| BLOCKER | 1 | `hooks/sonarqube_analysis_hook.py` always-same return (S3516) |
-| CRITICAL | 15 | Cognitive complexity (S3776), duplicated literals (S1192) |
-| MAJOR | 15 | Nested ternaries in `policy_db.py` (S3358), regex/if merges |
-| MINOR | 17 | Redundant except types (S5713), unused vars, localhost HTTP |
+| BLOCKER | 0 | — |
+| CRITICAL | 1 | `lib/credentials_set.py:113` cognitive complexity (python:S3776) |
+| MAJOR | 0 | — |
+| MINOR | 0 | — |
 
 ## Hot files
 
-| File | Issues (approx) |
+| File | Issues |
 | --- | ---: |
-| `lib/policy_db.py` | 16 |
-| `lib/ide_port.py` | 5 |
-| `lib/local_server.py` | 4 |
-| `lib/language_support.py` | 4 |
-| `lib/server_health.py` | 4 |
-| `lib/context_resolve.py` | 3 |
-| `hooks/sonarqube_analysis_hook.py` | 2 |
+| `lib/credentials_set.py` | 1 |
 
 ## Critical-only export (optional)
 
