@@ -6,8 +6,8 @@
 **JSON twin:** `<workspace>/.sft/issue-checklist.json`  
 **Remediation hints:** [`templates/remediation.easyscanpkg.json`](../templates/remediation.easyscanpkg.json)
 
-Last exported scan (lib + bin + hooks): **1 open**  
-(0 BLOCKER, 1 CRITICAL, 0 MAJOR, 0 MINOR) — 2026-08-31
+Last exported scan (lib + bin + hooks): **0 open** — resolved  
+(0 BLOCKER, 0 CRITICAL, 0 MAJOR, 0 MINOR) — 2026-08-31
 
 ## How agents should fix
 
@@ -35,15 +35,13 @@ Last exported scan (lib + bin + hooks): **1 open**
 | Priority | Count | Focus |
 | --- | ---: | --- |
 | BLOCKER | 0 | — |
-| CRITICAL | 1 | `lib/credentials_set.py:113` cognitive complexity (python:S3776) |
+| CRITICAL | 0 | — |
 | MAJOR | 0 | — |
 | MINOR | 0 | — |
 
 ## Hot files
 
-| File | Issues |
-| --- | ---: |
-| `lib/credentials_set.py` | 1 |
+_None — checklist empty._
 
 ## Critical-only export (optional)
 
