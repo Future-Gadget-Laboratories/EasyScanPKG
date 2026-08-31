@@ -52,3 +52,25 @@ Standard dev commands are documented in `README.md` and `CONTRIBUTING.md`:
 - Config/state lives under `~/.config/sft/` (not in the repo). Secret files
   (`sonar.env`, `sonar-local.env`, `sonar-local-admin.json`) must never be committed.
   Plugin JARs cache under `~/.config/sft/plugins/` (also not committed).
+  `http://127.0.0.1:9000`, and auto-mints an admin token into
+  `~/.config/sft/sonar-local.env`. First boot takes ~40s after images are pulled.
+  Stop with `./bin/sonar-local-down`. The generated local admin password is
+  stored in `~/.config/sft/sonar-local-admin.json`.
+
+- **Docker images** (`sonarqube:community`, `postgres:16-alpine`,
+  `sonarsource/sonar-scanner-cli`, `sonarsource/sonarqube-mcp`) are pulled at
+  runtime and cached in the VM image. If a fresh pod is missing them, they will
+  be re-pulled automatically on first use (needs Docker Hub network access).
+
+- **Run a scan (core flow):**
+  `./bin/sonar-scan --workspace <PROJECT> --sources <dirs> --project-key <key>`
+  runs the scanner over Docker `--network=host`, then
+  `./bin/sonar-issues --local list --project-key <key>` /
+  `./bin/sonar-issues --local export --workspace <PROJECT> --refresh` produces
+  `.sft/issue-checklist.md`. Note: `sonar-scan`'s own post-scan issue printout
+  can read `0` due to a brief server indexing delay even when the analysis
+  succeeded — re-query with `sonar-issues list` to see the real results.
+
+- Config/state lives under `~/.config/sft/` (not in the repo) and is not
+  committed. Secret files (`sonar.env`, `sonar-local.env`,
+  `sonar-local-admin.json`) must never be committed.
