@@ -1,0 +1,79 @@
+{
+  "schema": "easyscan.remediation/v1",
+  "description": "Agent fix hints for EasyScanPKG Sonar findings (pair with .sft/issue-checklist.md).",
+  "priority_order": ["BLOCKER", "CRITICAL", "MAJOR", "MINOR", "INFO"],
+  "rules": {
+    "python:S3516": {
+      "summary": "Method always returns the same value",
+      "guidance": [
+        "Return meaningful distinct values for success vs failure paths",
+        "Or change the function to void/None if the return is unused",
+        "Check fail-open hooks: returning True always hides failures"
+      ]
+    },
+    "python:S3776": {
+      "summary": "Cognitive complexity too high",
+      "guidance": [
+        "Extract nested branches into named helpers",
+        "Use early returns / guard clauses",
+        "Split multi-responsibility functions; target complexity ≤ 15"
+      ]
+    },
+    "python:S1192": {
+      "summary": "Duplicated string literal",
+      "guidance": [
+        "Introduce a module-level named constant near first use",
+        "Reuse the constant everywhere the literal appeared"
+      ]
+    },
+    "python:S3358": {
+      "summary": "Nested ternary / conditional expression",
+      "guidance": [
+        "Replace nested x if c else y if d else z with if/elif/else statements",
+        "Or extract a small helper that returns the chosen value"
+      ]
+    },
+    "python:S5713": {
+      "summary": "Redundant exception class in except",
+      "guidance": [
+        "If catching Exception (or a parent), drop child types already covered",
+        "Keep only the most specific types you need to handle differently"
+      ]
+    },
+    "python:S1481": {
+      "summary": "Unused local variable",
+      "guidance": [
+        "Rename to _ if the value is intentionally ignored",
+        "Or remove the assignment if truly unused"
+      ]
+    },
+    "python:S1066": {
+      "summary": "Collapsible if statements",
+      "guidance": [
+        "Merge nested if A: if B: into if A and B:"
+      ]
+    },
+    "python:S6019": {
+      "summary": "Reluctant quantifier matches empty",
+      "guidance": [
+        "Replace broken regex (e.g. .*? that can only match empty) with a correct pattern",
+        "Prefer explicit character classes over reluctant dots when intent is clear"
+      ]
+    },
+    "python:S7504": {
+      "summary": "Unnecessary list() on iterable",
+      "guidance": [
+        "Pass the iterable directly if only iterating once",
+        "Keep list() only when you need random access, len, or multiple passes"
+      ]
+    },
+    "python:S5332": {
+      "summary": "Clear-text HTTP protocol",
+      "guidance": [
+        "Localhost IDE/Sonar bridges may intentionally use http://127.0.0.1 — document why",
+        "For non-loopback hosts prefer https://",
+        "If intentional, keep the finding listed; do not 'resolve' without rationale"
+      ]
+    }
+  }
+}

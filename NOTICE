@@ -1,0 +1,42 @@
+EasyScanPKG
+Copyright 2026 EasyScanPKG contributors
+
+This product includes software developed for integrating with SonarQube
+tooling at runtime. EasyScanPKG itself is licensed under the Apache License,
+Version 2.0.
+
+Third-party components (NOT redistributed in this repository; pulled at runtime):
+
+1. SonarQube Community Build (Docker image `sonarqube:community`)
+   - Community Build binaries: GNU LGPL v3
+   - Bundled analyzers may be subject to Sonar Source-Available License (SSALv1)
+   - See: https://www.sonarsource.com/license/
+
+2. SonarScanner CLI (Docker image `sonarsource/sonar-scanner-cli`)
+   - Licensed by SonarSource; obtained via Docker Hub at runtime
+
+3. SonarQube MCP Server (Docker image `sonarsource/sonarqube-mcp`)
+   - Licensed by SonarSource; obtained via Docker Hub at runtime
+
+4. Sonar Build Wrapper (optional)
+   - Commercial component distributed with SonarQube Server editions that
+     include CFamily analysis
+   - EasyScanPKG may download it from YOUR server URL when available
+   - EasyScanPKG does NOT vendor or redistribute the Build Wrapper
+
+5. SonarQube for IDE (VS Code / Cursor extension `SonarSource.sonarlint-vscode`)
+   - Installed via the Cursor/VS Code marketplace by the user or
+     `sonar-ide-port --install`
+   - Not redistributed in this repository
+
+6. SonarQube C++ Community plugin (sonar-cxx)
+   - Upstream: https://github.com/SonarOpenCommunity/sonar-cxx
+   - Licensed under GNU LGPL v3
+   - EasyScanPKG may download the plugin JAR from GitHub Releases at runtime
+     into the local SonarQube `extensions/plugins` volume
+   - EasyScanPKG does NOT vendor or redistribute the JAR in this repository
+   - Not affiliated with SonarSource; competes with commercial CFamily
+
+Trademarks: "SonarQube", "SonarLint", and related marks are trademarks of
+SonarSource S.A. EasyScanPKG is an independent helper and is not affiliated
+with or endorsed by SonarSource.

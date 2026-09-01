@@ -1,0 +1,206 @@
+#!/usr/bin/env bash
+# Daily launcher: start local Sonar → wire MCP/Cursor → open workspace.
+# Invoked by the Linux Mint favorites / desktop icon (easyscan.desktop).
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+export BRIDGE="$ROOT"
+export SFT_AGENT_BRIDGE="$ROOT"
+
+# Persist bridge path
+mkdir -p "$HOME/.config/sft"
+cat > "$HOME/.config/sft/bridge.env" <<EOF
+export SFT_AGENT_BRIDGE="$ROOT"
+export BRIDGE="$ROOT"
+EOF
+chmod 600 "$HOME/.config/sft/bridge.env"
+# shellcheck disable=SC1091
+source "$HOME/.config/sft/bridge.env"
+
+DESKTOP_ENV="$HOME/.config/sft/desktop.env"
+# Optional example workspace (set EASYSCAN_EXAMPLE_WS); otherwise $PWD
+DEFAULT_WS=""
+EXAMPLE_WS="${EASYSCAN_EXAMPLE_WS:-}"
+WORKSPACE=""
+OPEN_CURSOR=1
+NO_PROMPT=1
+JSON=0
+SKIP_LOCAL=0
+QUICK_CHECK=1
+
+usage() {
+  cat <<EOF
+Usage: $(basename "$0") [options]
+
+  --workspace PATH   Project to open in Cursor (default: from desktop.env or \$PWD)
+  --no-cursor        Spin up stack only; do not launch Cursor
+  --prompt           Allow credential dialogs (default: --no-prompt for icon clicks)
+  --skip-local       Do not start local SonarQube Docker
+  --no-check         Skip quick easyscan-check before start
+  --json             Print status JSON at the end
+  -h, --help         Show help
+
+Ordered steps (every launch / after reboot):
+  1. Quick readiness check + install skills
+  2. Load config + ensure Docker usable
+  3. Start local SonarQube if needed
+  4. Resolve connection (remote → local fallback)
+  5. Merge Cursor MCP + detect IDE bridge
+  6. Open Cursor on the bound workspace
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --workspace) WORKSPACE="$2"; shift 2 ;;
+    --no-cursor) OPEN_CURSOR=0; shift ;;
+    --prompt) NO_PROMPT=0; shift ;;
+    --skip-local) SKIP_LOCAL=1; shift ;;
+    --no-check) QUICK_CHECK=0; shift ;;
+    --json) JSON=1; shift ;;
+    -h|--help) usage; exit 0 ;;
+    *) echo "Unknown option: $1" >&2; usage; exit 2 ;;
+  esac
+done
+
+notify() {
+  local title="$1" body="$2"
+  if command -v notify-send >/dev/null 2>&1; then
+    notify-send --app-name="EasyScan" --icon=sft-sonar "$title" "$body" 2>/dev/null || true
+  fi
+  echo "==> $title — $body"
+}
+
+# Resolve workspace
+if [[ -z "$WORKSPACE" ]] && [[ -f "$DESKTOP_ENV" ]]; then
+  # shellcheck disable=SC1090
+  source "$DESKTOP_ENV"
+  WORKSPACE="${SFT_SONAR_WORKSPACE:-}"
+fi
+if [[ -z "$WORKSPACE" ]]; then
+  if [[ -n "$DEFAULT_WS" && -d "$DEFAULT_WS" ]]; then
+    WORKSPACE="$DEFAULT_WS"
+  elif [[ -d "$EXAMPLE_WS" ]]; then
+    WORKSPACE="$EXAMPLE_WS"
+  else
+    WORKSPACE="$(pwd)"
+  fi
+fi
+WORKSPACE="$(cd "$WORKSPACE" && pwd)"
+
+# Persist for next launch
+cat > "$DESKTOP_ENV" <<EOF
+# Written by sonar-desktop — do not commit
+SFT_SONAR_WORKSPACE=$WORKSPACE
+SFT_SONAR_OPEN_CURSOR=$OPEN_CURSOR
+EOF
+chmod 600 "$DESKTOP_ENV"
+
+notify "EasyScan" "Starting stack for $WORKSPACE"
+
+# Skills + quick check every launch
+"$ROOT/bin/install-skills.sh" >/dev/null 2>&1 || true
+if [[ "$QUICK_CHECK" -eq 1 ]]; then
+  "$ROOT/bin/easyscan-check" --quick --skip-tests || notify "EasyScan check" "Quick check reported issues (continuing)"
+fi
+
+# Load remote + local env into this shell (local overrides URL/token when present)
+set -a
+[[ -f "$HOME/.config/sft/sonar.env" ]] && . "$HOME/.config/sft/sonar.env"
+[[ -f "$HOME/.config/sft/sonar-local.env" ]] && . "$HOME/.config/sft/sonar-local.env"
+set +a
+
+# 1) Docker usable?
+if command -v docker >/dev/null 2>&1; then
+  if ! docker info >/dev/null 2>&1; then
+    if groups | grep -qw docker && command -v sg >/dev/null 2>&1; then
+      notify "Docker" "Refreshing docker group via sg docker"
+    else
+      notify "Docker" "Permission denied — run: newgrp docker"
+    fi
+  fi
+else
+  notify "Docker missing" "Install Docker for local SonarQube"
+fi
+
+# 2) Local SonarQube
+if [[ "$SKIP_LOCAL" -eq 0 ]]; then
+  notify "Local SonarQube" "Ensuring server is up (first boot may take a few minutes)"
+  if ! "$ROOT/bin/sonar-local-up"; then
+    notify "Local SonarQube" "Start failed — continuing with remote/standalone resolution"
+  fi
+  # Prefer local credentials for MCP after local-up
+  set -a
+  [[ -f "$HOME/.config/sft/sonar-local.env" ]] && . "$HOME/.config/sft/sonar-local.env"
+  set +a
+fi
+
+# 3) Connection + MCP + policy
+UP_ARGS=(--workspace "$WORKSPACE")
+[[ "$NO_PROMPT" -eq 1 ]] && UP_ARGS+=(--no-prompt)
+"$ROOT/bin/sonar-mcp-up" "${UP_ARGS[@]}" || true
+
+# 4) IDE extension / port (best effort — needs Cursor reload after first install)
+if command -v cursor >/dev/null 2>&1; then
+  "$ROOT/bin/sonar-ide-port" --install >/dev/null 2>&1 || true
+fi
+IDE_OUT="$("$ROOT/bin/sonar-ide-port" --workspace "$WORKSPACE" --json 2>/dev/null || true)"
+IDE_PORT=""
+if [[ -n "$IDE_OUT" ]]; then
+  IDE_PORT="$(python3 -c 'import json,sys; d=json.loads(sys.argv[1]); print(d.get("port") or "")' "$IDE_OUT" 2>/dev/null || true)"
+fi
+if [[ -n "$IDE_PORT" ]]; then
+  export SONARQUBE_IDE_PORT="$IDE_PORT"
+  python3 "$ROOT/lib/merge_cursor_mcp.py" || true
+  notify "IDE bridge" "Port $IDE_PORT"
+else
+  notify "IDE bridge" "Not listening yet — open Cursor, then reload window if first install"
+fi
+
+# Status snapshot
+STATUS="$("$ROOT/bin/sonar-mcp-status" --workspace "$WORKSPACE" --json 2>/dev/null || echo '{}')"
+
+# 5) Open Cursor
+if [[ "$OPEN_CURSOR" -eq 1 ]]; then
+  if command -v cursor >/dev/null 2>&1; then
+    notify "Cursor" "Opening $WORKSPACE"
+    # Pass Sonar env into Cursor process so MCP stdio inherits tokens
+    env \
+      SONARQUBE_URL="${SONARQUBE_URL:-}" \
+      SONARQUBE_TOKEN="${SONARQUBE_TOKEN:-}" \
+      SONARQUBE_PROJECT_KEY="${SONARQUBE_PROJECT_KEY:-}" \
+      SONARQUBE_IDE_PORT="${SONARQUBE_IDE_PORT:-}" \
+      BRIDGE="$ROOT" \
+      SFT_AGENT_BRIDGE="$ROOT" \
+      cursor "$WORKSPACE" >/dev/null 2>&1 &
+    disown || true
+  else
+    notify "Cursor missing" "Install Cursor, then re-run this launcher"
+  fi
+fi
+
+if [[ "$JSON" -eq 1 ]]; then
+  python3 - "$WORKSPACE" "$IDE_PORT" "$STATUS" <<'PY'
+import json, sys
+workspace, ide_port, status_raw = sys.argv[1], sys.argv[2], sys.argv[3]
+try:
+    status = json.loads(status_raw) if status_raw else {}
+except json.JSONDecodeError:
+    status = {"raw": status_raw}
+print(json.dumps({
+    "ok": True,
+    "workspace": workspace,
+    "ide_port": ide_port or None,
+    "status": status,
+}, indent=2))
+PY
+else
+  echo ""
+  echo "Ready."
+  echo "  workspace: $WORKSPACE"
+  echo "  IDE port:  ${IDE_PORT:-not detected}"
+  "$ROOT/bin/sonar-mcp-status" --workspace "$WORKSPACE" 2>/dev/null | head -8 || true
+fi
+
+notify "EasyScan" "Stack ready"
+exit 0

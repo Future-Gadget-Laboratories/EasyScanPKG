@@ -1,0 +1,158 @@
+#!/usr/bin/env python3
+"""Create, list, and bind SonarQube projects (local or remote)."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _bootstrap import bootstrap
+
+bootstrap()
+
+from context_resolve import resolve_creds  # noqa: E402
+from env_write import update_local_credentials  # noqa: E402
+from local_server import DEFAULT_LOCAL_URL  # noqa: E402
+from policy_db import resolve_store  # noqa: E402
+from sonar_api import api  # noqa: E402
+
+
+def cmd_list(args: argparse.Namespace) -> int:
+    creds = resolve_creds(context=args.context, prefer_local=args.local)
+    code, data = api(
+        creds.url,
+        creds.token,
+        "GET",
+        "/api/projects/search",
+        query={"ps": args.limit, "q": args.query or ""},
+    )
+    if code != 200 or not isinstance(data, dict):
+        print(f"list failed: HTTP {code} {data}", file=sys.stderr)
+        return 1
+    rows = [
+        {"key": c.get("key"), "name": c.get("name"), "visibility": c.get("visibility")}
+        for c in data.get("components", [])
+    ]
+    if args.json:
+        print(
+            json.dumps(
+                {"url": creds.url, "context": creds.context_name, "projects": rows},
+                indent=2,
+            )
+        )
+    else:
+        ctx = f" context={creds.context_name}" if creds.context_name else ""
+        print(f"Server: {creds.url}{ctx}  ({len(rows)} projects)")
+        for r in rows:
+            print(f"  {r['key']}\t{r['name']}")
+    return 0
+
+
+def cmd_create(args: argparse.Namespace) -> int:
+    creds = resolve_creds(context=args.context, prefer_local=args.local)
+    key = args.project_key
+    name = args.name or key
+    code, data = api(
+        creds.url,
+        creds.token,
+        "POST",
+        "/api/projects/create",
+        query={"project": key, "name": name},
+    )
+    ok = code == 200 or (code == 400 and "already" in str(data).lower())
+    if not ok:
+        print(f"create failed: HTTP {code} {data}", file=sys.stderr)
+        return 1
+
+    if args.local or creds.prefer_local or creds.url.startswith(
+        ("http://127.0.0.1", "http://localhost")
+    ):
+        update_local_credentials(creds.url, creds.token, project_key=key)
+
+    store = resolve_store()
+    ctx_name = args.context or creds.context_name
+    if ctx_name:
+        store.upsert_context(ctx_name, project_key=key, url=creds.url)
+    if args.workspace:
+        store.upsert_workspace(args.workspace, project_key=key, context_name=ctx_name)
+        store.set_connection_prefs(last_url=creds.url)
+
+    payload = {
+        "ok": True,
+        "url": creds.url,
+        "context": ctx_name,
+        "project_key": key,
+        "name": name,
+        "http": code,
+    }
+    if args.json:
+        print(json.dumps(payload, indent=2))
+    else:
+        print(f"Project ready: {key} @ {creds.url}")
+        if ctx_name:
+            print(f"Context: {ctx_name}")
+        if args.workspace:
+            print(f"Bound workspace: {args.workspace}")
+    return 0
+
+
+def cmd_bind(args: argparse.Namespace) -> int:
+    store = resolve_store()
+    ctx_name = args.context
+    row = store.upsert_workspace(
+        args.workspace, project_key=args.project_key, context_name=ctx_name
+    )
+    if ctx_name:
+        store.upsert_context(ctx_name, project_key=args.project_key)
+    if args.local or (ctx_name == "local"):
+        from context_resolve import resolve_creds as _rc
+
+        creds = _rc(context=ctx_name or "local", prefer_local=True, project_key=args.project_key)
+        update_local_credentials(
+            creds.url or DEFAULT_LOCAL_URL,
+            creds.token,
+            project_key=args.project_key,
+        )
+    if args.json:
+        print(json.dumps(row, indent=2))
+    else:
+        extra = f" context={ctx_name}" if ctx_name else ""
+        print(f"Bound {args.workspace} -> {args.project_key}{extra}")
+    return 0
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--local", action="store_true", help="Force local SonarQube (127.0.0.1:9000)")
+    parser.add_argument("--context", help="Named analysis context")
+    parser.add_argument("--json", action="store_true")
+    sub = parser.add_subparsers(dest="cmd", required=True)
+
+    p_list = sub.add_parser("list", help="List projects")
+    p_list.add_argument("--query", default="")
+    p_list.add_argument("--limit", type=int, default=50)
+
+    p_create = sub.add_parser("create", help="Create project and optionally bind workspace")
+    p_create.add_argument("project_key")
+    p_create.add_argument("--name")
+    p_create.add_argument("--workspace")
+
+    p_bind = sub.add_parser("bind", help="Bind workspace to project key in policy DB")
+    p_bind.add_argument("workspace")
+    p_bind.add_argument("project_key")
+
+    args = parser.parse_args()
+    if args.cmd == "list":
+        return cmd_list(args)
+    if args.cmd == "create":
+        return cmd_create(args)
+    if args.cmd == "bind":
+        return cmd_bind(args)
+    return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

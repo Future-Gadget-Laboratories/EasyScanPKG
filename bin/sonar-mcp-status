@@ -1,0 +1,75 @@
+#!/usr/bin/env python3
+"""Show MCP / IDE / policy status."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _bootstrap import bootstrap
+
+bootstrap()
+
+from env_load import apply_sonar_env, connected_mode_available, redact_env  # noqa: E402
+from ide_port import find_ide_port  # noqa: E402
+from mcp_docker import status  # noqa: E402
+from policy_db import resolve_store  # noqa: E402
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--workspace", default=os.getcwd())
+    parser.add_argument("--json", action="store_true")
+    args = parser.parse_args()
+
+    store = resolve_store()
+    env = apply_sonar_env()
+    ide = find_ide_port()
+    st = status(store)
+    snap = store.merge_project_overlay(args.workspace)
+
+    payload = {
+        "mode": st.mode,
+        "backend": store.get_domain("connection").get("active_backend", "unknown"),
+        "connected_credentials_present": connected_mode_available(env),
+        "docker_available": st.docker_available,
+        "container_running": st.container_running,
+        "container_name": st.container_name,
+        "detail": st.detail,
+        "ide_port": ide.port if ide else None,
+        "ide_name": ide.ide_name if ide else None,
+        "policy_db": str(store.db_path),
+        "preferences_export": str(store.export_path),
+        "connection": snap["connection"],
+        "workspace": store.get_workspace(args.workspace),
+        "env": redact_env(
+            {
+                k: os.environ[k]
+                for k in (
+                    "SONARQUBE_URL",
+                    "SONARQUBE_ORG",
+                    "SONARQUBE_PROJECT_KEY",
+                    "SONARQUBE_IDE_PORT",
+                    "SONARQUBE_TOKEN",
+                )
+                if os.environ.get(k)
+            }
+        ),
+    }
+    if args.json:
+        print(json.dumps(payload, indent=2))
+    else:
+        print(f"mode: {payload['mode']}")
+        print(f"IDE: {payload['ide_port'] or 'not detected'}")
+        print(f"docker: {payload['docker_available']} running={payload['container_running']}")
+        print(f"policy: {payload['policy_db']}")
+        print(f"connected creds: {payload['connected_credentials_present']}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

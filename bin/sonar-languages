@@ -1,0 +1,102 @@
+#!/usr/bin/env python3
+"""Probe SonarQube language support; optionally install CFamily build-wrapper or sonar-cxx."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _bootstrap import bootstrap
+
+bootstrap()
+
+from env_load import apply_sonar_env  # noqa: E402
+from env_write import LOCAL_ENV, read_env_file  # noqa: E402
+from language_support import install_build_wrapper, probe_language_support, support_as_dict  # noqa: E402
+from local_server import DEFAULT_LOCAL_URL  # noqa: E402
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--url")
+    parser.add_argument("--local", action="store_true")
+    parser.add_argument(
+        "--install-build-wrapper",
+        action="store_true",
+        help="Download build-wrapper into ~/.config/sft/build-wrapper when available (CFamily only)",
+    )
+    parser.add_argument(
+        "--install-cxx",
+        action="store_true",
+        help="Download/install SonarOpenCommunity/sonar-cxx into the local Community stack",
+    )
+    parser.add_argument("--json", action="store_true")
+    args = parser.parse_args()
+
+    apply_sonar_env()
+    local = read_env_file(LOCAL_ENV)
+    url = args.url or os.environ.get("SONARQUBE_URL") or local.get("SONARQUBE_URL") or DEFAULT_LOCAL_URL
+    if args.local:
+        url = local.get("SONARQUBE_URL") or DEFAULT_LOCAL_URL
+    token = os.environ.get("SONARQUBE_TOKEN") or local.get("SONARQUBE_TOKEN")
+
+    cxx_install = None
+    if args.install_cxx:
+        from sonar_cxx_plugin import ensure_cxx_plugin  # noqa: E402
+
+        cxx_install = ensure_cxx_plugin(url=url, force=True, bootstrap_profile=True)
+        if not cxx_install.ok:
+            print(f"sonar-cxx install failed: {cxx_install.detail}", file=sys.stderr)
+
+    support = probe_language_support(url, token)
+    bw_path = None
+    if args.install_build_wrapper:
+        dest = Path.home() / ".config" / "sft" / "build-wrapper"
+        bw_path = install_build_wrapper(url, dest)
+        if bw_path is None:
+            print(
+                "Build Wrapper not available on this server (no CFamily static assets)",
+                file=sys.stderr,
+            )
+
+    payload = support_as_dict(support)
+    if bw_path is not None:
+        payload["build_wrapper_installed"] = str(bw_path)
+    if cxx_install is not None:
+        payload["sonar_cxx_install"] = {
+            "ok": cxx_install.ok,
+            "detail": cxx_install.detail,
+            "jar_name": cxx_install.jar_name,
+            "tag": cxx_install.tag,
+            "profile": cxx_install.profile,
+            "restarted": cxx_install.restarted,
+        }
+
+    if args.json:
+        print(json.dumps(payload, indent=2))
+        return 0 if (cxx_install is None or cxx_install.ok) else 1
+
+    print(f"Server: {support.url}")
+    print(f"Languages ({len(support.languages)}): {', '.join(support.languages)}")
+    print(f"CFamily (C/C++/ObjC): {support.cfamily_available}")
+    print(f"sonar-cxx (Community CXX): {support.sonar_cxx_available}")
+    print(f"Julia: {support.has_julia}   Assembly: {support.has_assembly}")
+    print(f"Build Wrapper URL: {support.build_wrapper_url or 'not available'}")
+    if bw_path:
+        print(f"Build Wrapper binary: {bw_path}")
+    if cxx_install is not None:
+        print(
+            f"sonar-cxx install: ok={cxx_install.ok} detail={cxx_install.detail} "
+            f"jar={cxx_install.jar_name} profile={cxx_install.profile}"
+        )
+    for note in support.notes:
+        print(f"- {note}")
+    return 0 if (cxx_install is None or cxx_install.ok) else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

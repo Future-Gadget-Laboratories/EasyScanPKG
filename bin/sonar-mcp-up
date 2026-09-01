@@ -1,0 +1,149 @@
+#!/usr/bin/env python3
+"""Ensure Sonar MCP readiness, resolve connection, reload policy across spin-up."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _bootstrap import bootstrap
+
+bootstrap()
+
+from connection_resolver import Backend, resolve_connection  # noqa: E402
+from env_load import apply_sonar_env, redact_env  # noqa: E402
+from ide_port import diagnose_ide_bridge, find_ide_port  # noqa: E402
+from merge_codex_config import merge_codex_config  # noqa: E402
+from merge_cursor_mcp import merge_mcp_config  # noqa: E402
+from mcp_docker import ensure_up  # noqa: E402
+from policy_db import resolve_store  # noqa: E402
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--workspace", default=os.getcwd())
+    parser.add_argument("--json", action="store_true")
+    parser.add_argument(
+        "--prompt",
+        action="store_true",
+        default=True,
+        help="Prompt for URL/token when missing or rejected (default: on)",
+    )
+    parser.add_argument(
+        "--no-prompt",
+        action="store_true",
+        help="Never show GUI/CLI credential prompts",
+    )
+    parser.add_argument(
+        "--cli",
+        action="store_true",
+        help="Use terminal credential prompts instead of GUI dialogs",
+    )
+    parser.add_argument(
+        "--no-local-fallback",
+        action="store_true",
+        help="Do not start local SonarQube Docker on remote failure",
+    )
+    args = parser.parse_args()
+    prompt = args.prompt and not args.no_prompt
+    if args.cli:
+        os.environ["SFT_SONAR_CLI_PROMPT"] = "1"
+
+    store = resolve_store()
+    apply_sonar_env()
+    merged = store.merge_project_overlay(args.workspace)
+
+    resolved = resolve_connection(
+        store,
+        workspace=args.workspace,
+        prompt=prompt,
+        allow_local_fallback=not args.no_local_fallback,
+    )
+
+    ide = find_ide_port()
+    ide_diag = diagnose_ide_bridge()
+    ide_port = ide.port if ide else None
+    if ide_port:
+        os.environ["SONARQUBE_IDE_PORT"] = str(ide_port)
+        store.upsert_workspace(args.workspace, last_ide_port=ide_port)
+    elif merged["connection"].get("prefer_connected"):
+        ws = store.get_workspace(args.workspace)
+        if ws and ws.get("last_ide_port"):
+            os.environ.setdefault("SONARQUBE_IDE_PORT", str(ws["last_ide_port"]))
+
+    if resolved.url:
+        store.set_connection_prefs(last_url=resolved.url)
+    if resolved.project_key:
+        store.upsert_workspace(args.workspace, project_key=resolved.project_key)
+
+    merge_mcp_config()
+    merge_codex_config()
+    st = ensure_up(store, ide_port=ide_port)
+
+    mode = resolved.backend.value
+    store.record_event(
+        "spin_up",
+        {
+            "workspace": str(Path(args.workspace).resolve()),
+            "backend": mode,
+            "detail": resolved.detail,
+            "prompted": resolved.prompted,
+            "ide_port": ide_port,
+        },
+    )
+    store.export_preferences()
+
+    payload = {
+        "ok": True,
+        "backend": mode,
+        "mode": mode if mode != "standalone" else st.mode,
+        "detail": resolved.detail,
+        "prompted": resolved.prompted,
+        "credentials_saved": resolved.credentials_saved,
+        "ide_port": ide_port,
+        "ide_name": ide.ide_name if ide else None,
+        "docker_available": st.docker_available,
+        "policy_db": str(store.db_path),
+        "env": redact_env(
+            {
+                k: os.environ[k]
+                for k in (
+                    "SONARQUBE_URL",
+                    "SONARQUBE_ORG",
+                    "SONARQUBE_PROJECT_KEY",
+                    "SONARQUBE_IDE_PORT",
+                    "SONARQUBE_TOKEN",
+                )
+                if os.environ.get(k)
+            }
+        ),
+        "connection": merged.get("connection"),
+        "scan": merged.get("scan"),
+        "agent": merged.get("agent"),
+    }
+
+    if args.json:
+        print(json.dumps(payload, indent=2))
+    else:
+        print(f"sonar-mcp-up: backend={mode} — {resolved.detail}")
+        if resolved.credentials_saved:
+            print("  credentials saved")
+        elif resolved.prompted:
+            print("  credential prompt shown but nothing saved (cancelled or empty)")
+            print(f"  run: {os.environ.get('BRIDGE', 'agent-bridge')}/bin/sonar-credentials --cli --test")
+        print(f"  policy: {store.db_path}")
+        if ide_port:
+            print(f"  IDE bridge: port {ide_port}")
+        else:
+            print(f"  IDE bridge: not detected — {ide_diag.detail}")
+            if ide_diag.hint:
+                print(f"  hint: {ide_diag.hint}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

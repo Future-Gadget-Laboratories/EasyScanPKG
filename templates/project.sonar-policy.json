@@ -1,0 +1,16 @@
+{
+  "project_key": "example.project",
+  "connection": {
+    "prefer_connected": true
+  },
+  "scan": {
+    "max_files_per_analyze": 40
+  },
+  "agent": {
+    "must_analyze_on_task_end": true
+  },
+  "hook": {
+    "after_file_edit_enabled": true,
+    "fail_open": true
+  }
+}

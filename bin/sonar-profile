@@ -1,0 +1,254 @@
+#!/usr/bin/env python3
+"""Import/export/bind SonarQube quality profile XML for EasyScanPKG contexts."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _bootstrap import bootstrap
+
+bootstrap()
+
+from context_resolve import ensure_default_contexts, resolve_creds  # noqa: E402
+from quality_profiles import language_from_xml, profile_name_from_xml  # noqa: E402
+from sonar_api import api, api_multipart, api_raw  # noqa: E402
+
+
+def cmd_list(args: argparse.Namespace) -> int:
+    creds = resolve_creds(context=args.context, prefer_local=args.local)
+    query: dict = {}
+    if args.language:
+        query["language"] = args.language
+    if args.project_key or creds.project_key:
+        query["project"] = args.project_key or creds.project_key
+    code, data = api(creds.url, creds.token, "GET", "/api/qualityprofiles/search", query=query)
+    if code != 200 or not isinstance(data, dict):
+        print(f"list failed: HTTP {code} {data}", file=sys.stderr)
+        return 1
+    profiles = data.get("profiles") or []
+    if args.json:
+        print(json.dumps({"url": creds.url, "profiles": profiles}, indent=2))
+        return 0
+    print(f"Server: {creds.url}  ({len(profiles)} profiles)")
+    for p in profiles:
+        default = " [default]" if p.get("isDefault") else ""
+        print(
+            f"  {p.get('language')}\t{p.get('name')}\t"
+            f"key={p.get('key')}{default}"
+        )
+    return 0
+
+
+def cmd_export(args: argparse.Namespace) -> int:
+    creds = resolve_creds(context=args.context, prefer_local=args.local)
+    code, raw = api_raw(
+        creds.url,
+        creds.token,
+        "GET",
+        "/api/qualityprofiles/backup",
+        query={"language": args.language, "qualityProfile": args.name},
+    )
+    if code != 200 or not raw:
+        print(f"export failed: HTTP {code} {raw[:200]!r}", file=sys.stderr)
+        return 1
+    out = Path(args.output)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_bytes(raw)
+    if args.json:
+        print(json.dumps({"ok": True, "path": str(out), "bytes": len(raw)}, indent=2))
+    else:
+        print(f"Wrote {out} ({len(raw)} bytes)")
+    return 0
+
+
+def cmd_import(args: argparse.Namespace) -> int:
+    path = Path(args.file).expanduser().resolve()
+    if not path.is_file():
+        print(f"file not found: {path}", file=sys.stderr)
+        return 2
+    creds = resolve_creds(context=args.context, prefer_local=args.local)
+    language = args.language or language_from_xml(path)
+    profile_name = args.name or profile_name_from_xml(path) or path.stem
+
+    fields: dict[str, str] = {}
+    if creds.org:
+        fields["organization"] = creds.org
+    code, data = api_multipart(
+        creds.url,
+        creds.token,
+        "/api/qualityprofiles/restore",
+        fields=fields or None,
+        files={"backup": path},
+    )
+    if code not in (200, 204) or (isinstance(data, dict) and data.get("errors")):
+        print(f"import failed: HTTP {code} {data}", file=sys.stderr)
+        return 1
+
+    profile = data.get("profile") if isinstance(data, dict) else None
+    restored_name = (profile or {}).get("name") or profile_name
+    restored_lang = (profile or {}).get("language") or language
+    profile_key = (profile or {}).get("key")
+
+    # Optionally set as default for language
+    if args.set_default and restored_lang and restored_name:
+        dcode, dbody = api(
+            creds.url,
+            creds.token,
+            "POST",
+            "/api/qualityprofiles/set_default",
+            form={"language": restored_lang, "qualityProfile": restored_name},
+        )
+        if dcode not in (200, 204):
+            print(f"warning: set_default failed HTTP {dcode} {dbody}", file=sys.stderr)
+
+    bind_key = args.bind_project or creds.project_key
+    if bind_key and restored_lang and restored_name:
+        bcode, bbody = api(
+            creds.url,
+            creds.token,
+            "POST",
+            "/api/qualityprofiles/add_project",
+            form={
+                "language": restored_lang,
+                "qualityProfile": restored_name,
+                "project": bind_key,
+            },
+        )
+        if bcode not in (200, 204):
+            # already associated is often 400 — soft warn
+            print(f"warning: add_project failed HTTP {bcode} {bbody}", file=sys.stderr)
+
+    store = ensure_default_contexts()
+    ctx_name = args.context or store.get_active_context_name() or "local"
+    if store.get_context(ctx_name) is None:
+        store.upsert_context(ctx_name, url=creds.url)
+    if restored_lang and restored_name:
+        store.upsert_context_profile(
+            ctx_name,
+            language=restored_lang,
+            profile_name=restored_name,
+            profile_key=profile_key,
+            is_default=bool(args.set_default),
+        )
+    if args.remediation:
+        store.upsert_context(ctx_name, remediation_path=str(Path(args.remediation).resolve()))
+
+    store.record_event(
+        "profile.import",
+        {
+            "context": ctx_name,
+            "language": restored_lang,
+            "profile": restored_name,
+            "file": str(path),
+        },
+    )
+
+    payload = {
+        "ok": True,
+        "http": code,
+        "context": ctx_name,
+        "language": restored_lang,
+        "profile_name": restored_name,
+        "profile_key": profile_key,
+        "rule_successes": (data or {}).get("ruleSuccesses") if isinstance(data, dict) else None,
+        "rule_failures": (data or {}).get("ruleFailures") if isinstance(data, dict) else None,
+        "bound_project": bind_key,
+    }
+    if args.json:
+        print(json.dumps(payload, indent=2))
+    else:
+        print(
+            f"Imported profile {restored_lang}/{restored_name} "
+            f"into context={ctx_name} @ {creds.url}"
+        )
+        if bind_key:
+            print(f"Bound to project: {bind_key}")
+    return 0
+
+
+def cmd_bind(args: argparse.Namespace) -> int:
+    creds = resolve_creds(context=args.context, prefer_local=args.local)
+    project = args.project_key or creds.project_key
+    if not project:
+        print("Need --project-key", file=sys.stderr)
+        return 2
+    code, body = api(
+        creds.url,
+        creds.token,
+        "POST",
+        "/api/qualityprofiles/add_project",
+        form={
+            "language": args.language,
+            "qualityProfile": args.name,
+            "project": project,
+        },
+    )
+    ok = code in (200, 204)
+    store = ensure_default_contexts()
+    ctx_name = args.context or store.get_active_context_name() or "local"
+    if ok and store.get_context(ctx_name):
+        store.upsert_context_profile(
+            ctx_name,
+            language=args.language,
+            profile_name=args.name,
+            is_default=False,
+        )
+    if args.json:
+        print(json.dumps({"ok": ok, "http": code, "body": body}, indent=2))
+    elif ok:
+        print(f"Bound {args.language}/{args.name} -> project {project}")
+    else:
+        print(f"bind failed: HTTP {code} {body}", file=sys.stderr)
+    return 0 if ok else 1
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--local", action="store_true")
+    parser.add_argument("--context", help="Named analysis context")
+    parser.add_argument("--json", action="store_true")
+    sub = parser.add_subparsers(dest="cmd", required=True)
+
+    p_list = sub.add_parser("list", help="List quality profiles on the server")
+    p_list.add_argument("--language")
+    p_list.add_argument("--project-key")
+
+    p_exp = sub.add_parser("export", help="Backup a quality profile to XML")
+    p_exp.add_argument("--language", required=True)
+    p_exp.add_argument("--name", required=True, help="Quality profile name")
+    p_exp.add_argument("-o", "--output", required=True)
+
+    p_imp = sub.add_parser("import", help="Restore a quality profile XML backup")
+    p_imp.add_argument("file", help="Path to Sonar quality profile XML")
+    p_imp.add_argument("--language", help="Override language (else read from XML)")
+    p_imp.add_argument("--name", help="Override profile name (else read from XML)")
+    p_imp.add_argument("--set-default", action="store_true")
+    p_imp.add_argument("--bind-project", help="Associate profile with this project key")
+    p_imp.add_argument(
+        "--remediation",
+        help="Optional companion *.remediation.json path stored on the context",
+    )
+
+    p_bind = sub.add_parser("bind", help="Associate an existing profile with a project")
+    p_bind.add_argument("--language", required=True)
+    p_bind.add_argument("--name", required=True, help="Quality profile name")
+    p_bind.add_argument("--project-key")
+
+    args = parser.parse_args()
+    if args.cmd == "list":
+        return cmd_list(args)
+    if args.cmd == "export":
+        return cmd_export(args)
+    if args.cmd == "import":
+        return cmd_import(args)
+    if args.cmd == "bind":
+        return cmd_bind(args)
+    return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

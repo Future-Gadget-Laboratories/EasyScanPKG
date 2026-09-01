@@ -1,0 +1,25 @@
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+.env
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.cursor/debug*
+*.log
+.DS_Store
+
+# Never ship local Sonar secrets
+sonar.env
+sonar-local.env
+sonar-local-admin.json
+bridge.env
+desktop.env
+
+# Workspace Sonar overlays / generated checklists
+.sft/

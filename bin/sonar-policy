@@ -1,0 +1,105 @@
+#!/usr/bin/env python3
+"""Inspect or update the persistent Sonar policy / scan preferences DB."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _bootstrap import bootstrap
+
+bootstrap()
+
+from policy_db import resolve_store  # noqa: E402
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    sub = parser.add_subparsers(dest="cmd", required=True)
+
+    sub.add_parser("show", help="Print preferences JSON snapshot")
+    sub.add_parser("export", help="Write preferences.json export")
+
+    p_set = sub.add_parser("set", help="Set a domain preference")
+    p_set.add_argument("domain", choices=["scan", "agent", "hook", "tool", "connection"])
+    p_set.add_argument("key")
+    p_set.add_argument("value", help="JSON value or plain string")
+
+    p_bind = sub.add_parser("bind", help="Bind workspace to a Sonar project key")
+    p_bind.add_argument("workspace")
+    p_bind.add_argument("project_key")
+
+    p_conn = sub.add_parser("connection", help="Update connection prefs (no tokens)")
+    p_conn.add_argument("--url")
+    p_conn.add_argument("--org")
+    p_conn.add_argument("--prefer-connected", choices=["true", "false"])
+    p_conn.add_argument("--image")
+
+    args = parser.parse_args()
+    store = resolve_store()
+
+    if args.cmd == "show":
+        print(json.dumps(store.snapshot(), indent=2))
+        return 0
+    if args.cmd == "export":
+        path = store.export_preferences()
+        print(path)
+        return 0
+    if args.cmd == "set":
+        try:
+            value = json.loads(args.value)
+        except json.JSONDecodeError:
+            value = args.value
+        table_keys = {
+            "prefer_connected",
+            "last_url",
+            "last_org",
+            "mcp_image",
+            "mcp_container_name",
+        }
+        if args.domain == "connection":
+            if args.key in table_keys:
+                store.set_connection_prefs(**{args.key: value})
+            else:
+                # kv prefs: fallback_to_local_server, local_url, active_backend, etc.
+                if isinstance(value, str):
+                    low = value.lower()
+                    if low in ("true", "false"):
+                        value = low == "true"
+                store.set_pref("connection", args.key, value)
+        else:
+            store.set_pref(args.domain, args.key, value)
+        snap = store.snapshot()
+        out = snap["connection"]
+        if args.domain == "connection" and args.key not in table_keys:
+            kv = store.get_domain("connection")
+            out = {**out, **kv}
+        elif args.domain != "connection":
+            out = snap[args.domain]
+        print(json.dumps(out, indent=2))
+        return 0
+    if args.cmd == "bind":
+        row = store.upsert_workspace(args.workspace, project_key=args.project_key)
+        print(json.dumps(row, indent=2))
+        return 0
+    if args.cmd == "connection":
+        store.set_connection_prefs(
+            last_url=args.url,
+            last_org=args.org,
+            prefer_connected=(
+                None
+                if args.prefer_connected is None
+                else args.prefer_connected == "true"
+            ),
+            mcp_image=args.image,
+        )
+        print(json.dumps(store.snapshot()["connection"], indent=2))
+        return 0
+    return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
