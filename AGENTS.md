@@ -55,7 +55,8 @@ Standard dev commands are documented in `README.md` and `CONTRIBUTING.md`:
   `http://127.0.0.1:9000`, and auto-mints an admin token into
   `~/.config/sft/sonar-local.env`. First boot takes ~40s after images are pulled.
   Stop with `./bin/sonar-local-down`. The generated local admin password is
-  stored in `~/.config/sft/sonar-local-admin.json`.
+  stored in `~/.config/sft/sonar-local-admin.json` and **printed by
+  `./bin/sonar-local-up`** (username `admin`) after bootstrap.
 
 - **Docker images** (`sonarqube:community`, `postgres:16-alpine`,
   `sonarsource/sonar-scanner-cli`, `sonarsource/sonarqube-mcp`) are pulled at

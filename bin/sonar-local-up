@@ -13,7 +13,7 @@ from _bootstrap import bootstrap
 
 bootstrap()
 
-from local_server import ensure_token, start, status  # noqa: E402
+from local_server import admin_login, ensure_token, start  # noqa: E402
 
 
 def main() -> int:
@@ -22,16 +22,28 @@ def main() -> int:
     args = parser.parse_args()
     st = start(wait=True)
     token = ensure_token()
+    login = admin_login()
     payload = {
         "ok": True,
         "running": st.running,
         "url": st.url,
         "token_bootstrapped": bool(token),
+        "admin_username": login["username"],
+        "admin_password": login["password"],
+        "admin_state_file": login["state_file"],
     }
     if args.json:
         print(json.dumps(payload, indent=2))
     else:
         print(f"local SonarQube: {st.url} running={st.running}")
+        print("UI login (open in a browser):")
+        print(f"  url:      {login['url']}")
+        print(f"  username: {login['username']}")
+        if login["password"]:
+            print(f"  password: {login['password']}")
+        else:
+            print("  password: (not set yet — check boot logs)")
+        print(f"  saved in: {login['state_file']}")
     return 0
 
 
