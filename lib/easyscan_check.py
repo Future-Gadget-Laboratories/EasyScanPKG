@@ -32,6 +32,7 @@ REQUIRED_BIN = (
     "sonar-mcp-up",
     "sonar-scan",
     "sonar-issues",
+    "easyscan-scan",
     "sonar-project",
     "sonar-context",
     "sonar-profile",

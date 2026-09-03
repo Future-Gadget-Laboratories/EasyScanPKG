@@ -16,15 +16,16 @@ Tooling readiness for one-click EasyScanPKG (local Sonar + agent bridge).
 | T8 | Skills not auto-installed on every start | `sonar-desktop` / commission call `install-skills.sh` |
 | T9 | C++/ASM/Julia expectations | `sonar-languages` honesty + README matrix |
 | T10 | Multi-project / multi-server switching | Named `contexts` in policy DB + `sonar-context` CLI; `--context` on project/scan/issues |
-| T11 | Agent-ingestible issue checklist | `sonar-issues export` → `.sft/issue-checklist.md` (done when empty) |
+| T11 | Agent-ingestible issue checklist | `sonar-issues export` / `easyscan-scan` → `.sft/issue-checklist.md` (v2 multi-source; done when empty) |
 | T12 | Quality profile XML import per context | `sonar-profile import/export/list/bind` + optional remediation sidecar |
 | T13 | Agent bootstrap + fix-queue skills | `easyscan-bootstrap`, `sonar-fix-queue`; playbooks in `docs/` |
+| T14 | Multi-scanner stage (clang-tidy, Dr. Memory) | `easyscan-scan` + `lib/scanners/*`; enable/disable via CLI/env/`.sft/sonar-policy.json` |
 
 Gate before publish: `./bin/easyscan-check --offline` and unit tests pass.
 
 ## Example agent workflow
 
 1. `sonar-local-up` / EasyScan desktop
-2. `sonar-scan --workspace <PROJECT> --sources <dirs>`
-3. Fix findings in the scanned project repository
-4. Re-scan; resolve only with documented rationale
+2. `easyscan-scan --workspace <PROJECT> --sources <dirs>` (add `--enable clang-tidy` / `--enable drmemory` as needed)
+3. Fix findings in the scanned project repository (note each issue's `source`)
+4. Re-run the same scan; resolve Sonar-only with documented rationale

@@ -4,7 +4,18 @@
     "prefer_connected": true
   },
   "scan": {
-    "max_files_per_analyze": 40
+    "max_files_per_analyze": 40,
+    "scanners": {
+      "sonar": { "enabled": true },
+      "clang-tidy": {
+        "enabled": false,
+        "compile_commands": "build/compile_commands.json"
+      },
+      "drmemory": {
+        "enabled": false,
+        "command": ["./build/tests"]
+      }
+    }
   },
   "agent": {
     "must_analyze_on_task_end": true

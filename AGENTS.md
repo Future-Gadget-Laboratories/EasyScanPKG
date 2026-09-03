@@ -68,9 +68,17 @@ Standard dev commands are documented in `README.md` and `CONTRIBUTING.md`:
   runs the scanner over Docker `--network=host`, then
   `./bin/sonar-issues --local list --project-key <key>` /
   `./bin/sonar-issues --local export --workspace <PROJECT> --refresh` produces
-  `.sft/issue-checklist.md`. Note: `sonar-scan`'s own post-scan issue printout
-  can read `0` due to a brief server indexing delay even when the analysis
-  succeeded — re-query with `sonar-issues list` to see the real results.
+  `.sft/issue-checklist.md` (schema `easyscan.issue-checklist/v2`, `source=sonar`).
+  Note: `sonar-scan`'s own post-scan issue printout can read `0` due to a brief
+  server indexing delay even when the analysis succeeded — re-query with
+  `sonar-issues list` to see the real results.
+
+- **Multi-scanner stage:** `./bin/easyscan-scan --workspace <PROJECT> --sources <dirs>
+  --project-key <key>` runs enabled scanners and merges into the same checklist.
+  Defaults: Sonar on, clang-tidy off, drmemory off. Enable with `--enable clang-tidy`
+  (needs `--compile-commands`) and/or `--enable drmemory` (needs `--drmemory-command --
+  <argv>`). Config also via `EASYSCAN_SCANNERS` / `.sft/sonar-policy.json` →
+  `scan.scanners`. clang-tidy and Dr. Memory are host tools (not Dockerized in v1).
 
 - Config/state lives under `~/.config/sft/` (not in the repo) and is not
   committed. Secret files (`sonar.env`, `sonar-local.env`,

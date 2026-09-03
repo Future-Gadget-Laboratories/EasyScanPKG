@@ -33,6 +33,22 @@ DEFAULT_SCAN_PREFS: dict[str, Any] = {
     "languages": [],
     "require_ide_for_file_list": True,
     "allow_snippet_fallback": True,
+    # Multi-scanner stage (easyscan-scan). New tools default off.
+    "scanners": {
+        "sonar": {"enabled": True},
+        "clang-tidy": {
+            "enabled": False,
+            "compile_commands": None,
+            "checks": None,
+            "config_file": None,
+        },
+        "drmemory": {
+            "enabled": False,
+            "command": None,
+            "args": [],
+            "timeout_sec": 600,
+        },
+    },
 }
 
 DEFAULT_AGENT_PREFS: dict[str, Any] = {

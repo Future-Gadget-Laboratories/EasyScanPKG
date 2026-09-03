@@ -74,6 +74,63 @@
         "For non-loopback hosts prefer https://",
         "If intentional, keep the finding listed; do not 'resolve' without rationale"
       ]
+    },
+    "clang-tidy:bugprone-use-after-move": {
+      "summary": "Use after move",
+      "guidance": [
+        "Do not use an object after std::move / move construction unless it was reassigned",
+        "Prefer copying when both the original and the new owner need a valid value",
+        "Reset or reinitialize the moved-from object before further use"
+      ]
+    },
+    "clang-tidy:bugprone-unchecked-optional-access": {
+      "summary": "Unchecked optional access",
+      "guidance": [
+        "Check has_value()/operator bool before operator* or value()",
+        "Prefer value_or(...) when a default is acceptable"
+      ]
+    },
+    "clang-tidy:clang-analyzer-core.NullDereference": {
+      "summary": "Null pointer dereference (clang analyzer)",
+      "guidance": [
+        "Guard pointer use with null checks",
+        "Prefer references or gsl::not_null when null is not a valid state"
+      ]
+    },
+    "clang-tidy:readability-braces-around-statements": {
+      "summary": "Missing braces around statements",
+      "guidance": [
+        "Add braces to if/for/while bodies for clarity and safer edits"
+      ]
+    },
+    "drmemory:unaddressable-access": {
+      "summary": "Unaddressable memory access",
+      "guidance": [
+        "Validate buffer sizes and pointer lifetimes before dereference",
+        "Watch for off-by-one errors and use-after-free",
+        "Reproduce under Dr. Memory with a small failing command from scan policy"
+      ]
+    },
+    "drmemory:uninitialized-read": {
+      "summary": "Uninitialized memory read",
+      "guidance": [
+        "Initialize locals and buffers before read",
+        "Zero-fill malloc'd memory when contents are read before write"
+      ]
+    },
+    "drmemory:leak": {
+      "summary": "Memory leak",
+      "guidance": [
+        "Free every malloc/new on all exit paths",
+        "Prefer RAII (unique_ptr/shared_ptr) over raw owning pointers"
+      ]
+    },
+    "drmemory:invalid-heap-argument": {
+      "summary": "Invalid heap argument",
+      "guidance": [
+        "Do not free the same pointer twice",
+        "Only free pointers obtained from the matching allocator"
+      ]
     }
   }
 }

@@ -41,8 +41,9 @@ Daily: click **EasyScan** on the panel, or run `bin/sonar-desktop`.
 | Named contexts (multi-project) | `./bin/sonar-context create\|list\|use\|bind` |
 | Create/bind project | `./bin/sonar-project --local create KEY --workspace "$PWD"` |
 | Scan sources | `./bin/sonar-scan --workspace "$PWD" --sources <dirs> [--context NAME]` |
+| All-in-one multi-scanner | `./bin/easyscan-scan --workspace "$PWD" [--enable clang-tidy] [--enable drmemory]` |
 | List / resolve issues | `./bin/sonar-issues --local list` / `resolve ISSUE` |
-| Export issue checklist | `./bin/sonar-issues export --workspace "$PWD" --refresh` |
+| Export issue checklist | `./bin/sonar-issues export --workspace "$PWD" --refresh` (or `easyscan-scan`) |
 | Quality profile XML | `./bin/sonar-profile import FILE.xml --local --bind-project KEY` |
 | Language probe | `./bin/sonar-languages --local` / `--install-cxx` |
 | Credentials (remote) | `./bin/sonar-credentials --cli --test` |
@@ -62,9 +63,20 @@ Register each GitHub/Sonar target as a **named context** (URL + token file ref +
 ### Issue checklist (done when empty)
 
 ```bash
+# Sonar-only export (existing path)
 ./bin/sonar-issues --local export --workspace "$PWD" --refresh
-# writes .sft/issue-checklist.md (+ .json). Re-export after fixes; stop at open_count=0.
+
+# All-in-one multi-scanner stage (Sonar on by default; others opt-in)
+./bin/easyscan-scan --workspace "$PWD" --project-key local-demo \
+  --enable clang-tidy --compile-commands build/compile_commands.json
+# optional dynamic memory scan:
+#   --enable drmemory --drmemory-command -- ./build/tests
+
+# writes .sft/issue-checklist.md (+ .json) with schema easyscan.issue-checklist/v2
+# (issues[].source = sonar | clang-tidy | drmemory). Re-run after fixes; stop at open_count=0.
 ```
+
+Per-repo enable/disable: `.sft/sonar-policy.json` → `scan.scanners` (see `templates/project.sonar-policy.json`).
 
 ### Quality profile XML import
 
@@ -78,7 +90,7 @@ Register each GitHub/Sonar target as a **named context** (URL + token file ref +
 ## Skills (auto-installed)
 
 - `easyscan-bootstrap` — activate Sonar in any agent environment
-- `sonar-fix-queue` — find `.sft/issue-checklist.md` and fix until empty
+- `sonar-fix-queue` — find `.sft/issue-checklist.md` and fix until empty (multi-scanner aware)
 - `sonar-local-ops` — local projects, scan, issues
 - `sonar-mcp-lifecycle` — MCP up/down, credentials
 - `sonar-agent-analysis` — end-of-task analyze via IDE/MCP

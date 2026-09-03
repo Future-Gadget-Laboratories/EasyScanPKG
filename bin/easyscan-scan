@@ -1,0 +1,198 @@
+#!/usr/bin/env python3
+"""All-in-one multi-scanner stage for EasyScanPKG.
+
+Runs enabled scanners (sonar, clang-tidy, drmemory), merges findings into the
+unified `.sft/issue-checklist.md` (+ JSON twin). Scanners are opt-in/out via
+CLI, env, or `.sft/sonar-policy.json` / `.sft/scan-policy.json`.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _bootstrap import bootstrap
+
+bootstrap()
+
+from issue_checklist import build_payload, write_checklist  # noqa: E402
+from scanners import (  # noqa: E402
+    dedupe_findings,
+    findings_to_issues,
+    resolve_scanner_config,
+    run_scanners,
+)
+
+
+def _split_csv(raw: str | None) -> list[str] | None:
+    if raw is None:
+        return None
+    return [part.strip() for part in raw.split(",") if part.strip()]
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--workspace", default=".", help="Project root (default: cwd)")
+    parser.add_argument("--project-key", help="Sonar project key")
+    parser.add_argument("--context", help="Named analysis context (sonar-context)")
+    parser.add_argument("--local", action="store_true", help="Prefer local Sonar credentials")
+    parser.add_argument("--sources", help="Sonar sources CSV (passed to sonar-scan)")
+    parser.add_argument("--exclusions", help="Sonar exclusions CSV")
+    parser.add_argument(
+        "--compile-commands",
+        help="Path to compile_commands.json (clang-tidy / optional sonar CFamily)",
+    )
+    parser.add_argument(
+        "--enable",
+        action="append",
+        default=[],
+        help="Enable scanner (repeatable). Names: sonar, clang-tidy, drmemory",
+    )
+    parser.add_argument(
+        "--disable",
+        action="append",
+        default=[],
+        help="Disable scanner (repeatable)",
+    )
+    parser.add_argument(
+        "--scanners",
+        help="Comma list of scanners to run exclusively (overrides enable/disable defaults)",
+    )
+    parser.add_argument(
+        "--drmemory-command",
+        nargs=argparse.REMAINDER,
+        help="Target command for Dr. Memory (use after --). Example: --drmemory-command -- ./build/tests",
+    )
+    parser.add_argument(
+        "--export-only",
+        action="store_true",
+        help="Skip running sonar-scan / tool binaries that need a prior analysis where possible",
+    )
+    parser.add_argument(
+        "--no-dedupe",
+        action="store_true",
+        help="Disable light cross-scanner dedupe",
+    )
+    parser.add_argument("--output", help="Markdown checklist path")
+    parser.add_argument("--json-output", help="JSON checklist path")
+    parser.add_argument("--no-json", action="store_true", help="Skip JSON twin")
+    parser.add_argument("--json", action="store_true", help="Print payload JSON to stdout")
+    parser.add_argument(
+        "--severity",
+        help="Sonar severity filter CSV (BLOCKER,CRITICAL,…)",
+    )
+    parser.add_argument(
+        "--type",
+        dest="issue_type",
+        help="Sonar type filter CSV (BUG,VULNERABILITY,CODE_SMELL)",
+    )
+    args = parser.parse_args(argv)
+
+    workspace = Path(args.workspace).resolve()
+    only = _split_csv(args.scanners)
+    enable = list(args.enable or [])
+    disable = list(args.disable or [])
+    drmemory_command = None
+    if args.drmemory_command is not None:
+        # argparse.REMAINDER may include a leading "--"
+        cmd = list(args.drmemory_command)
+        if cmd and cmd[0] == "--":
+            cmd = cmd[1:]
+        drmemory_command = cmd or None
+
+    scanner_config = resolve_scanner_config(
+        workspace,
+        enable=enable or None,
+        disable=disable or None,
+        only=only,
+        clang_tidy_compile_commands=args.compile_commands,
+        drmemory_command=drmemory_command,
+    )
+
+    # Propagate compile_commands into clang-tidy + sonar context even when set only via CLI flag.
+    if args.compile_commands and "clang-tidy" in scanner_config:
+        scanner_config["clang-tidy"]["compile_commands"] = args.compile_commands
+
+    context: dict = {
+        "context_name": args.context,
+        "prefer_local": bool(args.local),
+        "project_key": args.project_key,
+        "sources": args.sources,
+        "exclusions": args.exclusions,
+        "compile_commands": args.compile_commands,
+        "export_only": bool(args.export_only),
+        "severities": args.severity,
+        "types": args.issue_type,
+    }
+
+    findings, sources_run, sources_skipped = run_scanners(
+        workspace, scanner_config, context=context
+    )
+    if not args.no_dedupe:
+        findings = dedupe_findings(findings)
+    issues = findings_to_issues(findings)
+
+    server_url = context.get("_sonar_url") or "http://127.0.0.1:9000"
+    project_key = (
+        context.get("_sonar_project_key")
+        or args.project_key
+        or workspace.name
+    )
+    ctx_name = context.get("_sonar_context") or args.context
+    total = context.get("_sonar_total")
+    # When multiple sources run, open_count is len(merged issues), not sonar total alone.
+    if len(sources_run) != 1 or sources_run[0] != "sonar":
+        total = len(issues)
+
+    payload = build_payload(
+        server_url=str(server_url),
+        project_key=str(project_key),
+        issues=issues,
+        context=ctx_name,
+        filters={
+            k: v
+            for k, v in {
+                "severity": args.severity,
+                "type": args.issue_type,
+                "scanners": ",".join(sources_run),
+            }.items()
+            if v
+        },
+        total=total if total is not None else len(issues),
+        sources_run=sources_run,
+        sources_skipped=sources_skipped,
+        default_source=sources_run[0] if sources_run else "sonar",
+    )
+
+    md_path = Path(args.output) if args.output else None
+    json_path = Path(args.json_output) if args.json_output else None
+    md_out, json_out = write_checklist(
+        workspace,
+        payload,
+        md_path=md_path,
+        json_path=json_path,
+        write_json=not args.no_json,
+    )
+
+    if args.json:
+        print(json.dumps(payload, indent=2))
+    else:
+        print(f"Checklist: {md_out}")
+        if json_out:
+            print(f"JSON:      {json_out}")
+        print(f"sources_run={sources_run}")
+        if sources_skipped:
+            print(f"sources_skipped={sources_skipped}")
+        print(f"open_count={payload['open_count']} resolved={payload['resolved']}")
+        if payload["resolved"]:
+            print("Done — checklist empty.")
+    return 0 if not any(
+        str(v).startswith("error:") for v in sources_skipped.values()
+    ) or sources_run else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
