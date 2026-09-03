@@ -397,6 +397,17 @@ def _ensure_admin_password() -> str:
     return password
 
 
+def admin_login() -> dict[str, str]:
+    """Return local UI login details (URL, username, password, state file path)."""
+    state = _load_admin_state()
+    return {
+        "url": DEFAULT_LOCAL_URL,
+        "username": "admin",
+        "password": str(state.get("admin_password") or ""),
+        "state_file": str(ADMIN_STATE),
+    }
+
+
 def ensure_token(*, project_key: str | None = None) -> str:
     local = read_env_file(LOCAL_ENV)
     cached = local.get("SONARQUBE_TOKEN")

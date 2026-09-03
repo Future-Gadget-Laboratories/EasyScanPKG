@@ -34,12 +34,12 @@ chmod +x commission.sh install.sh bin/*
 ## 1. Start Sonar (local Docker Community)
 
 ```bash
-"$BRIDGE/bin/sonar-local-up"          # Postgres + SonarQube :9000 + token
+"$BRIDGE/bin/sonar-local-up"          # Postgres + SonarQube :9000 + token; prints admin UI login
 # or daily launcher:
 "$BRIDGE/bin/sonar-desktop"           # up + MCP + skills + open Cursor
 ```
 
-UI: http://127.0.0.1:9000  
+UI: http://127.0.0.1:9000 — username `admin`, password printed by `sonar-local-up`  
 Token file (never print): `~/.config/sft/sonar-local.env`
 
 ### If the local token is missing / rejected

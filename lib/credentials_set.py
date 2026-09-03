@@ -243,11 +243,15 @@ def set_local_credentials(
 
 
 def credential_paths() -> dict[str, str]:
+    from local_server import ADMIN_STATE
+
     return {
         "local_env": str(LOCAL_ENV),
         "remote_env": str(REMOTE_ENV),
         "local_exists": str(LOCAL_ENV.is_file()),
         "remote_exists": str(REMOTE_ENV.is_file()),
+        "admin_state": str(ADMIN_STATE),
+        "admin_exists": str(ADMIN_STATE.is_file()),
     }
 
 
