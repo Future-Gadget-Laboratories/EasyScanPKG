@@ -108,25 +108,76 @@ def load_policy_scanner_overlay(workspace: Path | None = None) -> dict[str, Any]
         return {}
 
 
+def _apply_scanners_csv(scanners: dict[str, dict[str, Any]], csv: str) -> None:
+    wanted = {part.strip() for part in csv.split(",") if part.strip()}
+    for name in scanners:
+        scanners[name]["enabled"] = name in wanted
+
+
+def _apply_env_flags(scanners: dict[str, dict[str, Any]]) -> None:
+    for name, env_key in _ENV_ENABLE.items():
+        flag = _parse_bool(os.environ.get(env_key))
+        if flag is None or name not in scanners:
+            continue
+        scanners[name]["enabled"] = flag
+
+
+def _apply_env_tool_paths(scanners: dict[str, dict[str, Any]]) -> None:
+    cc = os.environ.get("EASYSCAN_COMPILE_COMMANDS")
+    if cc and "clang-tidy" in scanners:
+        scanners["clang-tidy"]["compile_commands"] = cc
+    cmd = os.environ.get("EASYSCAN_DRMEMORY_COMMAND")
+    if cmd and "drmemory" in scanners:
+        scanners["drmemory"]["command"] = cmd
+
+
 def apply_env_overrides(scanners: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
     out = copy.deepcopy(scanners)
     csv = os.environ.get("EASYSCAN_SCANNERS")
     if csv:
-        wanted = {part.strip() for part in csv.split(",") if part.strip()}
-        for name in list(out):
-            out[name]["enabled"] = name in wanted
-    for name, env_key in _ENV_ENABLE.items():
-        flag = _parse_bool(os.environ.get(env_key))
-        if flag is None or name not in out:
-            continue
-        out[name]["enabled"] = flag
-    cc = os.environ.get("EASYSCAN_COMPILE_COMMANDS")
-    if cc and "clang-tidy" in out:
-        out["clang-tidy"]["compile_commands"] = cc
-    cmd = os.environ.get("EASYSCAN_DRMEMORY_COMMAND")
-    if cmd and "drmemory" in out:
-        out["drmemory"]["command"] = cmd
+        _apply_scanners_csv(out, csv)
+    _apply_env_flags(out)
+    _apply_env_tool_paths(out)
     return out
+
+
+def _apply_only_filter(scanners: dict[str, dict[str, Any]], only: Sequence[str]) -> None:
+    wanted = {s.strip() for s in only if s.strip()}
+    for name in scanners:
+        scanners[name]["enabled"] = name in wanted
+
+
+def _apply_enable_list(scanners: dict[str, dict[str, Any]], enable: Sequence[str]) -> None:
+    for name in enable:
+        key = name.strip()
+        if key in scanners:
+            scanners[key]["enabled"] = True
+        else:
+            scanners[key] = {"enabled": True}
+
+
+def _apply_disable_list(scanners: dict[str, dict[str, Any]], disable: Sequence[str]) -> None:
+    for name in disable:
+        key = name.strip()
+        if key in scanners:
+            scanners[key]["enabled"] = False
+
+
+def _apply_tool_cli_overrides(
+    scanners: dict[str, dict[str, Any]],
+    *,
+    clang_tidy_compile_commands: str | None,
+    drmemory_command: Sequence[str] | None,
+) -> None:
+    if clang_tidy_compile_commands and "clang-tidy" in scanners:
+        scanners["clang-tidy"]["compile_commands"] = clang_tidy_compile_commands
+    if drmemory_command is None or "drmemory" not in scanners:
+        return
+    cmd_list = [str(x) for x in drmemory_command]
+    if not cmd_list:
+        return
+    scanners["drmemory"]["command"] = cmd_list[0]
+    scanners["drmemory"]["args"] = cmd_list[1:]
 
 
 def apply_cli_overrides(
@@ -140,28 +191,16 @@ def apply_cli_overrides(
 ) -> dict[str, dict[str, Any]]:
     out = copy.deepcopy(scanners)
     if only is not None:
-        wanted = {s.strip() for s in only if s.strip()}
-        for name in list(out):
-            out[name]["enabled"] = name in wanted
+        _apply_only_filter(out, only)
     if enable:
-        for name in enable:
-            key = name.strip()
-            if key in out:
-                out[key]["enabled"] = True
-            else:
-                out[key] = {"enabled": True}
+        _apply_enable_list(out, enable)
     if disable:
-        for name in disable:
-            key = name.strip()
-            if key in out:
-                out[key]["enabled"] = False
-    if clang_tidy_compile_commands and "clang-tidy" in out:
-        out["clang-tidy"]["compile_commands"] = clang_tidy_compile_commands
-    if drmemory_command is not None and "drmemory" in out:
-        cmd_list = [str(x) for x in drmemory_command]
-        if cmd_list:
-            out["drmemory"]["command"] = cmd_list[0]
-            out["drmemory"]["args"] = cmd_list[1:]
+        _apply_disable_list(out, disable)
+    _apply_tool_cli_overrides(
+        out,
+        clang_tidy_compile_commands=clang_tidy_compile_commands,
+        drmemory_command=drmemory_command,
+    )
     return out
 
 

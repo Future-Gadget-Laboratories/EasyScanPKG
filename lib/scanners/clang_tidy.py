@@ -31,6 +31,8 @@ _LEVEL_TO_TYPE = {
     "note": "CODE_SMELL",
 }
 
+_CXX_SUFFIXES = {".c", ".cc", ".cpp", ".cxx", ".m", ".mm"}
+
 
 def parse_clang_tidy_output(text: str, *, workspace: Path | None = None) -> list[Finding]:
     """Parse clang-tidy text diagnostics into Findings."""
@@ -65,6 +67,64 @@ def parse_clang_tidy_output(text: str, *, workspace: Path | None = None) -> list
     return findings
 
 
+def _require_binary(config: Mapping[str, Any]) -> str:
+    binary = str(config.get("binary") or "clang-tidy")
+    if not shutil.which(binary) and not Path(binary).is_file():
+        raise RuntimeError(
+            f"clang-tidy binary not found ({binary}). "
+            "Install LLVM clang-tidy or disable the scanner."
+        )
+    return binary
+
+
+def _resolve_compile_commands(workspace: Path, config: Mapping[str, Any]) -> Path:
+    compile_commands = config.get("compile_commands")
+    if not compile_commands:
+        raise RuntimeError(
+            "clang-tidy requires compile_commands (path to compile_commands.json)"
+        )
+    cc_path = Path(str(compile_commands))
+    if not cc_path.is_absolute():
+        cc_path = workspace / cc_path
+    if not cc_path.is_file():
+        raise RuntimeError(f"compile_commands.json not found: {cc_path}")
+    return cc_path
+
+
+def _source_paths(cc_path: Path, workspace: Path, config: Mapping[str, Any]) -> list[str]:
+    paths = list(config.get("paths") or [])
+    if paths:
+        return paths
+    discovered = _paths_from_compile_commands(cc_path, workspace)
+    if not discovered:
+        raise RuntimeError("clang-tidy: no source paths to analyze")
+    return discovered
+
+
+def _build_clang_tidy_cmd(
+    binary: str,
+    cc_path: Path,
+    config: Mapping[str, Any],
+    workspace: Path,
+    paths: list[str],
+) -> list[str]:
+    cmd = [binary, f"-p={cc_path.parent}"]
+    checks = config.get("checks")
+    if checks:
+        cmd.append(f"-checks={checks}")
+    config_file = config.get("config_file")
+    if config_file:
+        cfg = Path(str(config_file))
+        if not cfg.is_absolute():
+            cfg = workspace / cfg
+        cmd.append(f"--config-file={cfg}")
+    header_filter = config.get("header_filter")
+    if header_filter:
+        cmd.append(f"-header-filter={header_filter}")
+    cmd.extend(str(p) for p in paths)
+    return cmd
+
+
 class ClangTidyScanner:
     name = "clang-tidy"
 
@@ -77,45 +137,10 @@ class ClangTidyScanner:
     ) -> list[Finding]:
         _ = context
         workspace = workspace.resolve()
-        binary = str(config.get("binary") or "clang-tidy")
-        if not shutil.which(binary) and not Path(binary).is_file():
-            raise RuntimeError(
-                f"clang-tidy binary not found ({binary}). "
-                "Install LLVM clang-tidy or disable the scanner."
-            )
-
-        compile_commands = config.get("compile_commands")
-        if not compile_commands:
-            raise RuntimeError(
-                "clang-tidy requires compile_commands (path to compile_commands.json)"
-            )
-        cc_path = Path(str(compile_commands))
-        if not cc_path.is_absolute():
-            cc_path = workspace / cc_path
-        if not cc_path.is_file():
-            raise RuntimeError(f"compile_commands.json not found: {cc_path}")
-
-        paths = list(config.get("paths") or [])
-        if not paths:
-            paths = _paths_from_compile_commands(cc_path, workspace)
-        if not paths:
-            raise RuntimeError("clang-tidy: no source paths to analyze")
-
-        cmd = [binary, f"-p={cc_path.parent}"]
-        checks = config.get("checks")
-        if checks:
-            cmd.append(f"-checks={checks}")
-        config_file = config.get("config_file")
-        if config_file:
-            cfg = Path(str(config_file))
-            if not cfg.is_absolute():
-                cfg = workspace / cfg
-            cmd.append(f"--config-file={cfg}")
-        header_filter = config.get("header_filter")
-        if header_filter:
-            cmd.append(f"-header-filter={header_filter}")
-
-        cmd.extend(str(p) for p in paths)
+        binary = _require_binary(config)
+        cc_path = _resolve_compile_commands(workspace, config)
+        paths = _source_paths(cc_path, workspace, config)
+        cmd = _build_clang_tidy_cmd(binary, cc_path, config, workspace, paths)
         timeout = int(config.get("timeout_sec") or 600)
         proc = subprocess.run(
             cmd,
@@ -151,9 +176,7 @@ def _paths_from_compile_commands(cc_path: Path, workspace: Path) -> list[str]:
         except ValueError:
             continue
         rel_s = str(rel)
-        if rel_s in seen:
-            continue
-        if path.suffix.lower() not in {".c", ".cc", ".cpp", ".cxx", ".m", ".mm"}:
+        if rel_s in seen or path.suffix.lower() not in _CXX_SUFFIXES:
             continue
         seen.add(rel_s)
         out.append(rel_s)
