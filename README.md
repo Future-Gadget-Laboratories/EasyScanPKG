@@ -41,7 +41,7 @@ Daily: click **EasyScan** on the panel, or run `bin/sonar-desktop`.
 | Named contexts (multi-project) | `./bin/sonar-context create\|list\|use\|bind` |
 | Create/bind project | `./bin/sonar-project --local create KEY --workspace "$PWD"` |
 | Scan sources | `./bin/sonar-scan --workspace "$PWD" --sources <dirs> [--context NAME]` |
-| All-in-one multi-scanner | `./bin/easyscan-scan --workspace "$PWD" [--enable clang-tidy] [--enable drmemory]` |
+| All-in-one multi-scanner | `./bin/easyscan-scan --workspace "$PWD" [--enable ruff] [--enable cppcheck] …` |
 | List / resolve issues | `./bin/sonar-issues --local list` / `resolve ISSUE` |
 | Export issue checklist | `./bin/sonar-issues export --workspace "$PWD" --refresh` (or `easyscan-scan`) |
 | Quality profile XML | `./bin/sonar-profile import FILE.xml --local --bind-project KEY` |
@@ -68,15 +68,42 @@ Register each GitHub/Sonar target as a **named context** (URL + token file ref +
 
 # All-in-one multi-scanner stage (Sonar on by default; others opt-in)
 ./bin/easyscan-scan --workspace "$PWD" --project-key local-demo \
-  --enable clang-tidy --compile-commands build/compile_commands.json
-# optional dynamic memory scan:
+  --enable clang-tidy --compile-commands build/compile_commands.json \
+  --enable ruff --enable shellcheck --enable cppcheck
+# dynamic memory (pick one per project):
+#   --enable asan --asan-command -- ./build/tests_asan
+#   --enable valgrind --valgrind-command -- ./build/tests
 #   --enable drmemory --drmemory-command -- ./build/tests
 
 # writes .sft/issue-checklist.md (+ .json) with schema easyscan.issue-checklist/v2
-# (issues[].source = sonar | clang-tidy | drmemory). Re-run after fixes; stop at open_count=0.
+# (issues[].source tags each tool). Re-run after fixes; stop at open_count=0.
 ```
 
 Per-repo enable/disable: `.sft/sonar-policy.json` → `scan.scanners` (see `templates/project.sonar-policy.json`).
+
+### Scanner catalog
+
+All tools except Sonar default **off**. Install the host binary (or point `binary` in policy), then `--enable <name>` / `EASYSCAN_ENABLE_*` / policy overlay. List names with `./bin/easyscan-scan --list-scanners`.
+
+| Scanner | Role | Enable example |
+| --- | --- | --- |
+| `sonar` | SonarQube analysis + issue export | on by default |
+| `clang-tidy` | C/C++ clang-tidy | `--enable clang-tidy --compile-commands build/compile_commands.json` |
+| `cppcheck` | C/C++ static analysis | `--enable cppcheck` |
+| `ruff` | Python lint / readability | `--enable ruff` |
+| `shellcheck` | Shell script lint | `--enable shellcheck` |
+| `semgrep` | Polyglot SAST | `--enable semgrep` |
+| `bandit` | Python security | `--enable bandit` |
+| `asan` / `ubsan` | Sanitizer run adapters | `--enable asan --asan-command -- ./bin_asan` |
+| `valgrind` | Memcheck (Linux) | `--enable valgrind --valgrind-command -- ./tests` |
+| `drmemory` | Dynamic memory | `--enable drmemory --drmemory-command -- ./tests` |
+| `gitleaks` | Secrets (filesystem scan) | `--enable gitleaks` |
+| `pip-audit` / `osv` | Dependency CVEs | `--enable pip-audit` / `--enable osv` |
+| `flawfinder` | C/C++ insecure-API heuristics | `--enable flawfinder` |
+| `clang-analyzer` | Clang Static Analyzer | `--enable clang-analyzer` (+ `report_dir` / `build_command`) |
+| `hadolint` | Dockerfile lint | `--enable hadolint` |
+
+Cloud / CI note: these are **host binaries** today (same pattern as clang-tidy / Dr. Memory). Docker wrappers can be added later if Cloud VMs need them.
 
 ### Quality profile XML import
 

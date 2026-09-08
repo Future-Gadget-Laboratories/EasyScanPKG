@@ -14,7 +14,21 @@
       "drmemory": {
         "enabled": false,
         "command": ["./build/tests"]
-      }
+      },
+      "cppcheck": { "enabled": false },
+      "ruff": { "enabled": false, "paths": ["lib", "bin", "hooks"] },
+      "shellcheck": { "enabled": false },
+      "semgrep": { "enabled": false, "config": "p/default" },
+      "bandit": { "enabled": false },
+      "asan": { "enabled": false, "command": null },
+      "ubsan": { "enabled": false, "command": null },
+      "valgrind": { "enabled": false, "command": null },
+      "gitleaks": { "enabled": false, "no_git": true },
+      "pip-audit": { "enabled": false },
+      "osv": { "enabled": false },
+      "flawfinder": { "enabled": false },
+      "clang-analyzer": { "enabled": false },
+      "hadolint": { "enabled": false }
     }
   },
   "agent": {

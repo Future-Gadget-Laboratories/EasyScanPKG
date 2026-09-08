@@ -33,12 +33,125 @@ DEFAULT_SCANNER_CONFIG: dict[str, dict[str, Any]] = {
         "timeout_sec": 600,
         "extra_flags": ["-batch", "-brief"],
     },
+    "cppcheck": {
+        "enabled": False,
+        "paths": ["."],
+        "std": None,
+        "suppressions": None,
+        "binary": "cppcheck",
+        "timeout_sec": 600,
+    },
+    "ruff": {
+        "enabled": False,
+        "paths": ["lib", "bin", "hooks"],
+        "select": None,
+        "ignore": None,
+        "config": None,
+        "binary": "ruff",
+        "timeout_sec": 300,
+    },
+    "shellcheck": {
+        "enabled": False,
+        "paths": [],
+        "binary": "shellcheck",
+        "timeout_sec": 300,
+    },
+    "semgrep": {
+        "enabled": False,
+        "config": "p/default",
+        "exclude": [],
+        "binary": "semgrep",
+        "timeout_sec": 900,
+    },
+    "bandit": {
+        "enabled": False,
+        "paths": ["lib", "bin"],
+        "skips": None,
+        "binary": "bandit",
+        "timeout_sec": 300,
+    },
+    "asan": {
+        "enabled": False,
+        "command": None,
+        "args": [],
+        "cwd": None,
+        "asan_options": "halt_on_error=0:detect_leaks=1:abort_on_error=0",
+        "timeout_sec": 600,
+    },
+    "ubsan": {
+        "enabled": False,
+        "command": None,
+        "args": [],
+        "cwd": None,
+        "ubsan_options": "print_stacktrace=1:halt_on_error=0",
+        "timeout_sec": 600,
+    },
+    "valgrind": {
+        "enabled": False,
+        "command": None,
+        "args": [],
+        "cwd": None,
+        "binary": "valgrind",
+        "timeout_sec": 600,
+    },
+    "gitleaks": {
+        "enabled": False,
+        "no_git": True,
+        "binary": "gitleaks",
+        "timeout_sec": 600,
+    },
+    "pip-audit": {
+        "enabled": False,
+        "requirements": None,
+        "binary": "pip-audit",
+        "timeout_sec": 600,
+    },
+    "osv": {
+        "enabled": False,
+        "binary": "osv-scanner",
+        "timeout_sec": 600,
+    },
+    "flawfinder": {
+        "enabled": False,
+        "paths": ["."],
+        "minlevel": "1",
+        "binary": "flawfinder",
+        "timeout_sec": 300,
+    },
+    "clang-analyzer": {
+        "enabled": False,
+        "report_dir": None,
+        "sarif": None,
+        "build_command": None,
+        "binary": "scan-build",
+        "timeout_sec": 1200,
+    },
+    "hadolint": {
+        "enabled": False,
+        "paths": [],
+        "binary": "hadolint",
+        "timeout_sec": 300,
+    },
 }
 
 _ENV_ENABLE = {
     "sonar": "EASYSCAN_ENABLE_SONAR",
     "clang-tidy": "EASYSCAN_ENABLE_CLANG_TIDY",
     "drmemory": "EASYSCAN_ENABLE_DRMEMORY",
+    "cppcheck": "EASYSCAN_ENABLE_CPPCHECK",
+    "ruff": "EASYSCAN_ENABLE_RUFF",
+    "shellcheck": "EASYSCAN_ENABLE_SHELLCHECK",
+    "semgrep": "EASYSCAN_ENABLE_SEMGREP",
+    "bandit": "EASYSCAN_ENABLE_BANDIT",
+    "asan": "EASYSCAN_ENABLE_ASAN",
+    "ubsan": "EASYSCAN_ENABLE_UBSAN",
+    "valgrind": "EASYSCAN_ENABLE_VALGRIND",
+    "gitleaks": "EASYSCAN_ENABLE_GITLEAKS",
+    "pip-audit": "EASYSCAN_ENABLE_PIP_AUDIT",
+    "osv": "EASYSCAN_ENABLE_OSV",
+    "flawfinder": "EASYSCAN_ENABLE_FLAWFINDER",
+    "clang-analyzer": "EASYSCAN_ENABLE_CLANG_ANALYZER",
+    "hadolint": "EASYSCAN_ENABLE_HADOLINT",
 }
 
 
@@ -129,6 +242,15 @@ def _apply_env_tool_paths(scanners: dict[str, dict[str, Any]]) -> None:
     cmd = os.environ.get("EASYSCAN_DRMEMORY_COMMAND")
     if cmd and "drmemory" in scanners:
         scanners["drmemory"]["command"] = cmd
+    for key, scanner, field in (
+        ("EASYSCAN_ASAN_COMMAND", "asan", "command"),
+        ("EASYSCAN_UBSAN_COMMAND", "ubsan", "command"),
+        ("EASYSCAN_VALGRIND_COMMAND", "valgrind", "command"),
+        ("EASYSCAN_SEMGREP_CONFIG", "semgrep", "config"),
+    ):
+        val = os.environ.get(key)
+        if val and scanner in scanners:
+            scanners[scanner][field] = val
 
 
 def apply_env_overrides(scanners: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
@@ -163,21 +285,40 @@ def _apply_disable_list(scanners: dict[str, dict[str, Any]], disable: Sequence[s
             scanners[key]["enabled"] = False
 
 
+def _set_run_command(
+    scanners: dict[str, dict[str, Any]],
+    name: str,
+    command: Sequence[str] | None,
+) -> None:
+    if command is None or name not in scanners:
+        return
+    cmd_list = [str(x) for x in command]
+    if not cmd_list:
+        return
+    scanners[name]["command"] = cmd_list[0] if len(cmd_list) == 1 else list(cmd_list)
+    if len(cmd_list) > 1 and isinstance(scanners[name].get("command"), str):
+        scanners[name]["command"] = cmd_list[0]
+        scanners[name]["args"] = cmd_list[1:]
+    elif len(cmd_list) > 1:
+        scanners[name]["command"] = cmd_list
+        scanners[name]["args"] = []
+
+
 def _apply_tool_cli_overrides(
     scanners: dict[str, dict[str, Any]],
     *,
     clang_tidy_compile_commands: str | None,
     drmemory_command: Sequence[str] | None,
+    asan_command: Sequence[str] | None = None,
+    ubsan_command: Sequence[str] | None = None,
+    valgrind_command: Sequence[str] | None = None,
 ) -> None:
     if clang_tidy_compile_commands and "clang-tidy" in scanners:
         scanners["clang-tidy"]["compile_commands"] = clang_tidy_compile_commands
-    if drmemory_command is None or "drmemory" not in scanners:
-        return
-    cmd_list = [str(x) for x in drmemory_command]
-    if not cmd_list:
-        return
-    scanners["drmemory"]["command"] = cmd_list[0]
-    scanners["drmemory"]["args"] = cmd_list[1:]
+    _set_run_command(scanners, "drmemory", drmemory_command)
+    _set_run_command(scanners, "asan", asan_command)
+    _set_run_command(scanners, "ubsan", ubsan_command)
+    _set_run_command(scanners, "valgrind", valgrind_command)
 
 
 def apply_cli_overrides(
@@ -188,6 +329,9 @@ def apply_cli_overrides(
     only: Sequence[str] | None = None,
     clang_tidy_compile_commands: str | None = None,
     drmemory_command: Sequence[str] | None = None,
+    asan_command: Sequence[str] | None = None,
+    ubsan_command: Sequence[str] | None = None,
+    valgrind_command: Sequence[str] | None = None,
 ) -> dict[str, dict[str, Any]]:
     out = copy.deepcopy(scanners)
     if only is not None:
@@ -200,6 +344,9 @@ def apply_cli_overrides(
         out,
         clang_tidy_compile_commands=clang_tidy_compile_commands,
         drmemory_command=drmemory_command,
+        asan_command=asan_command,
+        ubsan_command=ubsan_command,
+        valgrind_command=valgrind_command,
     )
     return out
 
@@ -212,6 +359,9 @@ def resolve_scanner_config(
     only: list[str] | None = None,
     clang_tidy_compile_commands: str | None = None,
     drmemory_command: list[str] | None = None,
+    asan_command: list[str] | None = None,
+    ubsan_command: list[str] | None = None,
+    valgrind_command: list[str] | None = None,
 ) -> dict[str, dict[str, Any]]:
     """Merge defaults ← policy ← workspace overlay ← env ← CLI."""
     cfg = copy.deepcopy(DEFAULT_SCANNER_CONFIG)
@@ -226,6 +376,9 @@ def resolve_scanner_config(
         only=only,
         clang_tidy_compile_commands=clang_tidy_compile_commands,
         drmemory_command=drmemory_command,
+        asan_command=asan_command,
+        ubsan_command=ubsan_command,
+        valgrind_command=valgrind_command,
     )
     return cfg
 

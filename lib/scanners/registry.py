@@ -5,15 +5,41 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Mapping
 
+from scanners.bandit import BanditScanner
 from scanners.base import Finding, Scanner
+from scanners.clang_analyzer import ClangAnalyzerScanner
 from scanners.clang_tidy import ClangTidyScanner
+from scanners.cppcheck import CppcheckScanner
+from scanners.deps import OsvScanner, PipAuditScanner
 from scanners.drmemory import DrMemoryScanner
+from scanners.flawfinder import FlawfinderScanner
+from scanners.gitleaks import GitleaksScanner
+from scanners.hadolint import HadolintScanner
+from scanners.ruff import RuffScanner
+from scanners.sanitizers import ASanScanner, UBSanScanner
+from scanners.semgrep import SemgrepScanner
+from scanners.shellcheck import ShellCheckScanner
 from scanners.sonar import SonarScanner
+from scanners.valgrind import ValgrindScanner
 
 _REGISTRY: dict[str, Scanner] = {
     "sonar": SonarScanner(),
     "clang-tidy": ClangTidyScanner(),
     "drmemory": DrMemoryScanner(),
+    "cppcheck": CppcheckScanner(),
+    "ruff": RuffScanner(),
+    "shellcheck": ShellCheckScanner(),
+    "semgrep": SemgrepScanner(),
+    "bandit": BanditScanner(),
+    "asan": ASanScanner(),
+    "ubsan": UBSanScanner(),
+    "valgrind": ValgrindScanner(),
+    "gitleaks": GitleaksScanner(),
+    "pip-audit": PipAuditScanner(),
+    "osv": OsvScanner(),
+    "flawfinder": FlawfinderScanner(),
+    "clang-analyzer": ClangAnalyzerScanner(),
+    "hadolint": HadolintScanner(),
 }
 
 

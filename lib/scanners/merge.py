@@ -6,6 +6,35 @@ from typing import Iterable
 
 from scanners.base import Finding
 
+# Normalize overlapping rule families across tools (token after optional prefix).
+_ALIAS_TOKENS = {
+    "use-after-move": "use-after-move",
+    "bugprone-use-after-move": "use-after-move",
+    "unaddressable-access": "unaddressable-access",
+    "unaddressable": "unaddressable-access",
+    "heap-use-after-free": "use-after-free",
+    "use-after-free": "use-after-free",
+    "nulldereference": "null-dereference",
+    "null-dereference": "null-dereference",
+    "clang-analyzer-core.nulldereference": "null-dereference",
+    "core.nulldereference": "null-dereference",
+    "nullpointer": "null-dereference",
+    "uninitvar": "uninitialized",
+    "uninitdata": "uninitialized",
+    "uninitialized-read": "uninitialized",
+    "uninitializedvariable": "uninitialized",
+    "memleak": "leak",
+    "memoryleak": "leak",
+    "leak": "leak",
+    "doublefree": "double-free",
+    "double-free": "double-free",
+    "bufferoverrun": "buffer-overflow",
+    "arrayindexoutofbounds": "buffer-overflow",
+    "bufferaccessoutofbounds": "buffer-overflow",
+    "strcpy": "unsafe-copy",
+    "strcat": "unsafe-copy",
+}
+
 
 def merge_findings(*batches: Iterable[Finding]) -> list[Finding]:
     out: list[Finding] = []
@@ -38,7 +67,8 @@ def _rule_token(rule: str) -> str:
         return ""
     if ":" in raw:
         raw = raw.split(":", 1)[-1]
-    return raw.replace("_", "-")
+    raw = raw.replace("_", "-")
+    return _ALIAS_TOKENS.get(raw, raw)
 
 
 def findings_to_issues(findings: Iterable[Finding]) -> list[dict]:
