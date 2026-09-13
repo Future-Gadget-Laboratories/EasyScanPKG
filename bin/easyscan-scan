@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """All-in-one multi-scanner stage for EasyScanPKG.
 
-Runs enabled scanners (sonar, clang-tidy, drmemory), merges findings into the
+Runs enabled scanners (sonar + opt-in tools), merges findings into the
 unified `.sft/issue-checklist.md` (+ JSON twin). Scanners are opt-in/out via
 CLI, env, or `.sft/sonar-policy.json` / `.sft/scan-policy.json`.
 """
@@ -20,10 +20,16 @@ bootstrap()
 
 from issue_checklist import build_payload, write_checklist  # noqa: E402
 from scanners import (  # noqa: E402
+    available_scanners,
     dedupe_findings,
     findings_to_issues,
     resolve_scanner_config,
     run_scanners,
+)
+
+_SCANNER_HELP = (
+    "sonar, clang-tidy, drmemory, cppcheck, ruff, shellcheck, semgrep, bandit, "
+    "asan, ubsan, valgrind, gitleaks, pip-audit, osv, flawfinder, clang-analyzer, hadolint"
 )
 
 
@@ -31,6 +37,15 @@ def _split_csv(raw: str | None) -> list[str] | None:
     if raw is None:
         return None
     return [part.strip() for part in raw.split(",") if part.strip()]
+
+
+def _remainder_command(raw: list[str] | None) -> list[str] | None:
+    if raw is None:
+        return None
+    cmd = list(raw)
+    if cmd and cmd[0] == "--":
+        cmd = cmd[1:]
+    return cmd or None
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -49,7 +64,7 @@ def main(argv: list[str] | None = None) -> int:
         "--enable",
         action="append",
         default=[],
-        help="Enable scanner (repeatable). Names: sonar, clang-tidy, drmemory",
+        help=f"Enable scanner (repeatable). Names: {_SCANNER_HELP}",
     )
     parser.add_argument(
         "--disable",
@@ -62,9 +77,29 @@ def main(argv: list[str] | None = None) -> int:
         help="Comma list of scanners to run exclusively (overrides enable/disable defaults)",
     )
     parser.add_argument(
+        "--list-scanners",
+        action="store_true",
+        help="Print registered scanner names and exit",
+    )
+    parser.add_argument(
         "--drmemory-command",
         nargs=argparse.REMAINDER,
         help="Target command for Dr. Memory (use after --). Example: --drmemory-command -- ./build/tests",
+    )
+    parser.add_argument(
+        "--asan-command",
+        nargs=argparse.REMAINDER,
+        help="Instrumented binary argv for ASan (use after --)",
+    )
+    parser.add_argument(
+        "--ubsan-command",
+        nargs=argparse.REMAINDER,
+        help="Instrumented binary argv for UBSan (use after --)",
+    )
+    parser.add_argument(
+        "--valgrind-command",
+        nargs=argparse.REMAINDER,
+        help="Target command for Valgrind Memcheck (use after --)",
     )
     parser.add_argument(
         "--export-only",
@@ -91,17 +126,14 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
+    if args.list_scanners:
+        print("\n".join(available_scanners()))
+        return 0
+
     workspace = Path(args.workspace).resolve()
     only = _split_csv(args.scanners)
     enable = list(args.enable or [])
     disable = list(args.disable or [])
-    drmemory_command = None
-    if args.drmemory_command is not None:
-        # argparse.REMAINDER may include a leading "--"
-        cmd = list(args.drmemory_command)
-        if cmd and cmd[0] == "--":
-            cmd = cmd[1:]
-        drmemory_command = cmd or None
 
     scanner_config = resolve_scanner_config(
         workspace,
@@ -109,7 +141,10 @@ def main(argv: list[str] | None = None) -> int:
         disable=disable or None,
         only=only,
         clang_tidy_compile_commands=args.compile_commands,
-        drmemory_command=drmemory_command,
+        drmemory_command=_remainder_command(args.drmemory_command),
+        asan_command=_remainder_command(args.asan_command),
+        ubsan_command=_remainder_command(args.ubsan_command),
+        valgrind_command=_remainder_command(args.valgrind_command),
     )
 
     # Propagate compile_commands into clang-tidy + sonar context even when set only via CLI flag.

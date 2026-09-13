@@ -19,6 +19,20 @@ TOOL_DOC_URLS = {
     "sonar": None,
     "clang-tidy": "https://clang.llvm.org/extra/clang-tidy/",
     "drmemory": "https://drmemory.org/",
+    "cppcheck": "https://cppcheck.sourceforge.io/",
+    "ruff": "https://docs.astral.sh/ruff/",
+    "shellcheck": "https://www.shellcheck.net/",
+    "semgrep": "https://semgrep.dev/docs/",
+    "bandit": "https://bandit.readthedocs.io/",
+    "asan": "https://clang.llvm.org/docs/AddressSanitizer.html",
+    "ubsan": "https://clang.llvm.org/docs/UndefinedBehaviorSanitizer.html",
+    "valgrind": "https://valgrind.org/docs/manual/mc-manual.html",
+    "gitleaks": "https://github.com/gitleaks/gitleaks",
+    "pip-audit": "https://pypi.org/project/pip-audit/",
+    "osv": "https://google.github.io/osv-scanner/",
+    "flawfinder": "https://dwheeler.com/flawfinder/",
+    "clang-analyzer": "https://clang-analyzer.llvm.org/",
+    "hadolint": "https://github.com/hadolint/hadolint",
 }
 
 

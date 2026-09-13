@@ -75,10 +75,13 @@ Standard dev commands are documented in `README.md` and `CONTRIBUTING.md`:
 
 - **Multi-scanner stage:** `./bin/easyscan-scan --workspace <PROJECT> --sources <dirs>
   --project-key <key>` runs enabled scanners and merges into the same checklist.
-  Defaults: Sonar on, clang-tidy off, drmemory off. Enable with `--enable clang-tidy`
-  (needs `--compile-commands`) and/or `--enable drmemory` (needs `--drmemory-command --
-  <argv>`). Config also via `EASYSCAN_SCANNERS` / `.sft/sonar-policy.json` →
-  `scan.scanners`. clang-tidy and Dr. Memory are host tools (not Dockerized in v1).
+  Defaults: Sonar on; all other tools off (`cppcheck`, `ruff`, `shellcheck`,
+  `semgrep`, `bandit`, `asan`/`ubsan`, `valgrind`, `drmemory`, `gitleaks`,
+  `pip-audit`/`osv`, `flawfinder`, `clang-analyzer`, `hadolint`, `clang-tidy`).
+  Enable with `--enable <name>` (or `EASYSCAN_ENABLE_*` / `EASYSCAN_SCANNERS` /
+  `.sft/sonar-policy.json` → `scan.scanners`). Run adapters (`asan`, `ubsan`,
+  `valgrind`, `drmemory`) need `--*-command -- <argv>`. All of these are **host
+  binaries** in v1 (not Dockerized); see README “Scanner catalog”.
 
 - Config/state lives under `~/.config/sft/` (not in the repo) and is not
   committed. Secret files (`sonar.env`, `sonar-local.env`,
