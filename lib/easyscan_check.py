@@ -18,6 +18,7 @@ REQUIRED_SKILLS = (
     "sonar-local-ops",
     "sonar-mcp-lifecycle",
     "sonar-agent-analysis",
+    "clean-code-errors",
 )
 
 REQUIRED_IMAGES = (
@@ -38,6 +39,8 @@ REQUIRED_BIN = (
     "sonar-desktop",
     "easyscan-check",
     "install-skills.sh",
+    "sonar-local-credentials",
+    "sonar-local-login",
 )
 
 

@@ -45,7 +45,7 @@ set +a
 ```
 
 First boot can take several minutes. UI: http://127.0.0.1:9000  
-Login is **username `admin`** plus the password printed by `sonar-local-up` (also in `~/.config/sft/sonar-local-admin.json`).
+Login is **username `admin`** plus the password printed by `sonar-local-up` on **this** computer (also `./bin/sonar-local-login`, file `~/.config/sft/sonar-local-admin.json`). A password from a cloud agent or any other machine is rejected.
 
 ## 2. Access token for API / scanner / MCP / agent skills
 

@@ -27,6 +27,7 @@ Skills installed:
 | `sonar-local-ops` | Projects, scan, issues CLI detail |
 | `sonar-mcp-lifecycle` | MCP / credentials / policy DB |
 | `sonar-agent-analysis` | End-of-task IDE/MCP file analyze |
+| `clean-code-errors` | Downloadable skill: local credentials + fix until the checklist is empty |
 
 ## Every session
 

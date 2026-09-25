@@ -47,6 +47,8 @@ Daily: click **EasyScan** on the panel, or run `bin/sonar-desktop`.
 | Language probe | `./bin/sonar-languages --local` / `--install-cxx` |
 | Credentials (remote) | `./bin/sonar-credentials --cli --test` |
 | Credentials (local) | `./bin/sonar-credentials --local --bootstrap --test` |
+| Local credential series | `./bin/sonar-local-credentials bootstrap\|list\|use NAME` |
+| Local UI login (this machine) | `./bin/sonar-local-login` |
 
 ### Multi-project contexts
 
@@ -82,6 +84,7 @@ Register each GitHub/Sonar target as a **named context** (URL + token file ref +
 - `sonar-local-ops` — local projects, scan, issues
 - `sonar-mcp-lifecycle` — MCP up/down, credentials
 - `sonar-agent-analysis` — end-of-task analyze via IDE/MCP
+- `clean-code-errors` — downloadable skill agents use to fix the local checklist until empty (`skills/clean-code-errors/install.sh`)
 
 See [docs/AGENT_SONAR_PLAYBOOK.md](docs/AGENT_SONAR_PLAYBOOK.md) and [docs/FIX_QUEUE.md](docs/FIX_QUEUE.md).
 
@@ -101,6 +104,7 @@ See [docs/AGENT_SONAR_PLAYBOOK.md](docs/AGENT_SONAR_PLAYBOOK.md) and [docs/FIX_Q
 | --- | --- |
 | `~/.config/sft/sonar.env` | Optional remote URL/token |
 | `~/.config/sft/sonar-local.env` | Auto local token (never commit) |
+| `~/.config/sft/credentials/` | Named local-only credential series (loopback URLs only, never commit) |
 | `~/.config/sft/sonar-policy/policy.db` | Policy + named contexts (no tokens) |
 | `~/.config/sft/desktop.env` | Workspace for EasyScan launcher |
 | `~/.config/sft/bridge.env` | `BRIDGE` / `SFT_AGENT_BRIDGE` path |
