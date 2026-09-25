@@ -437,6 +437,105 @@ def ensure_token(*, project_key: str | None = None) -> str:
     return token
 
 
+def _generate_named_token(name: str, token_type: str, admin_password: str) -> tuple[str, str]:
+    """Mint a token. Falls back to USER_TOKEN if the requested type is rejected."""
+    code, body = _api(
+        "POST",
+        "/api/user_tokens/generate",
+        user="admin",
+        password=admin_password,
+        query={"name": name, "type": token_type},
+    )
+    if code != 200 and "already exists" in body.lower():
+        _api(
+            "POST",
+            "/api/user_tokens/revoke",
+            user="admin",
+            password=admin_password,
+            query={"name": name},
+        )
+        code, body = _api(
+            "POST",
+            "/api/user_tokens/generate",
+            user="admin",
+            password=admin_password,
+            query={"name": name, "type": token_type},
+        )
+    used_type = token_type
+    if code != 200 and token_type != "USER_TOKEN":
+        used_type = "USER_TOKEN"
+        code, body = _api(
+            "POST",
+            "/api/user_tokens/generate",
+            user="admin",
+            password=admin_password,
+            query={"name": name, "type": used_type},
+        )
+    if code != 200:
+        raise RuntimeError(f"token generation failed for {name}: HTTP {code} {body[:200]}")
+    token = json.loads(body).get("token")
+    if not token:
+        raise RuntimeError(f"token generation returned no token for {name}")
+    return token, used_type
+
+
+def ensure_local_credential_series(*, project_key: str | None = None) -> dict:
+    """Store the local-only credential series (agent, scanner, issues).
+
+    Existing valid tokens are kept. New tokens are written under
+    ~/.config/sft/credentials/ and never returned in the summary.
+    """
+    from local_credentials import (
+        SERIES_SPECS,
+        LocalCredentialError,
+        load_local_token,
+        public_catalog,
+        store_local_credential,
+    )
+
+    if not is_running():
+        start(wait=True)
+
+    agent_token = ensure_token(project_key=project_key)
+    admin_password = _ensure_admin_password()
+    sonar_names = {
+        "agent": "sft-local-agent",
+        "scanner": "sft-local-scanner",
+        "issues": "sft-local-issues",
+    }
+    for cred_name, kind, purpose in SERIES_SPECS:
+        if cred_name == "agent":
+            store_local_credential(
+                cred_name,
+                DEFAULT_LOCAL_URL,
+                agent_token,
+                kind="USER_TOKEN",
+                project_key=project_key,
+                purpose=purpose,
+                activate=True,
+            )
+            continue
+        try:
+            existing = load_local_token(cred_name)
+        except LocalCredentialError:
+            existing = ""
+        if existing and check_server(DEFAULT_LOCAL_URL, existing).status == AuthStatus.OK:
+            continue
+        token, used_kind = _generate_named_token(sonar_names[cred_name], kind, admin_password)
+        store_local_credential(
+            cred_name,
+            DEFAULT_LOCAL_URL,
+            token,
+            kind=used_kind,
+            project_key=project_key,
+            purpose=purpose,
+            activate=False,
+        )
+    summary = public_catalog()
+    summary.pop("directory", None)
+    return summary
+
+
 def ensure_project(project_key: str, project_name: str | None = None) -> None:
     local = read_env_file(LOCAL_ENV)
     token = local.get("SONARQUBE_TOKEN") or ensure_token(project_key=project_key)

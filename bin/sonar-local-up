@@ -13,7 +13,8 @@ from _bootstrap import bootstrap
 
 bootstrap()
 
-from local_server import admin_login, ensure_token, start  # noqa: E402
+from local_credentials import credential_paths  # noqa: E402
+from local_server import admin_login, ensure_local_credential_series, ensure_token, start  # noqa: E402
 
 
 def main() -> int:
@@ -23,6 +24,8 @@ def main() -> int:
     st = start(wait=True)
     token = ensure_token()
     login = admin_login()
+    series = ensure_local_credential_series()
+    series["directory"] = credential_paths()["directory"]
     payload = {
         "ok": True,
         "running": st.running,
@@ -31,6 +34,20 @@ def main() -> int:
         "admin_username": login["username"],
         "admin_password": login["password"],
         "admin_state_file": login["state_file"],
+        "local_credentials": {
+            "directory": series["directory"],
+            "active": series.get("active"),
+            "local_only": True,
+            "entries": [
+                {
+                    "name": entry.get("name"),
+                    "kind": entry.get("kind"),
+                    "active": entry.get("active"),
+                    "token_present": entry.get("token_present"),
+                }
+                for entry in series.get("entries") or []
+            ],
+        },
     }
     if args.json:
         print(json.dumps(payload, indent=2))
@@ -44,6 +61,12 @@ def main() -> int:
         else:
             print("  password: (not set yet — check boot logs)")
         print(f"  saved in: {login['state_file']}")
+        creds = payload["local_credentials"]
+        print(f"Local-only credential series: {creds['directory']}")
+        print(f"  active: {creds.get('active') or '(none)'}")
+        for entry in creds["entries"]:
+            flag = "active" if entry.get("active") else "stored"
+            print(f"  {entry.get('name'):<10} {entry.get('kind'):<24} {flag}")
     return 0
 
 

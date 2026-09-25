@@ -19,6 +19,7 @@ Tooling readiness for one-click EasyScanPKG (local Sonar + agent bridge).
 | T11 | Agent-ingestible issue checklist | `sonar-issues export` → `.sft/issue-checklist.md` (done when empty) |
 | T12 | Quality profile XML import per context | `sonar-profile import/export/list/bind` + optional remediation sidecar |
 | T13 | Agent bootstrap + fix-queue skills | `easyscan-bootstrap`, `sonar-fix-queue`; playbooks in `docs/` |
+| T14 | Local-only credential series + downloadable clean skill | `sonar-local-credentials` stores agent/scanner/issues under `~/.config/sft/credentials/`; `skills/clean-code-errors` |
 
 Gate before publish: `./bin/easyscan-check --offline` and unit tests pass.
 
