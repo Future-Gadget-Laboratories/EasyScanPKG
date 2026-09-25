@@ -37,7 +37,9 @@ def main() -> int:
     print(f"  url:      {info['url']}")
     print(f"  username: {info['username']}")
     print(f"  password: {info['password']}")
-    print(f"  saved in: {info['state_file']}")
+    print(f"  home file:      {info['state_file']}")
+    print(f"  workspace file: {info.get('workspace_state_file', '')}")
+    print("Both files are created on this computer when you run this command.")
     print("Open that URL on this computer. Do not reuse this password on a remote Sonar server.")
     return 0
 

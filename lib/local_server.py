@@ -346,10 +346,26 @@ def _load_admin_state() -> dict:
     return {}
 
 
+def workspace_admin_state() -> Path:
+    """Project-local copy so the password file is in the checkout, not only $HOME."""
+    root = Path(os.environ.get("SFT_AGENT_BRIDGE") or os.environ.get("BRIDGE") or Path(__file__).resolve().parents[1])
+    return root / ".sft" / "sonar-local-admin.json"
+
+
+def _write_private_json(path: Path, data: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    os.chmod(path, 0o600)
+
+
 def _save_admin_state(data: dict) -> None:
-    ADMIN_STATE.parent.mkdir(parents=True, exist_ok=True)
-    ADMIN_STATE.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
-    os.chmod(ADMIN_STATE, 0o600)
+    _write_private_json(ADMIN_STATE, data)
+    # Checkout copy is gitignored (.sft/). Home config is easy to miss when
+    # Sonar was started outside this tool.
+    try:
+        _write_private_json(workspace_admin_state(), data)
+    except OSError:
+        pass
 
 
 def _generate_admin_password() -> str:
@@ -366,17 +382,7 @@ def _admin_reset_hint() -> str:
     )
 
 
-def _ensure_admin_password() -> str:
-    state = _load_admin_state()
-    stored = state.get("admin_password")
-    if stored and _validate_credentials("admin", stored):
-        return stored
-
-    if not _wait_default_admin_ready():
-        raise RuntimeError(
-            "local SonarQube admin credentials unavailable. " + _admin_reset_hint()
-        )
-
+def _rotate_admin_password(state: dict) -> str:
     password = _generate_admin_password()
     code, _body = _api(
         "POST",
@@ -398,6 +404,29 @@ def _ensure_admin_password() -> str:
     return password
 
 
+def _ensure_admin_password() -> str:
+    state = _load_admin_state()
+    stored = state.get("admin_password")
+    if stored and _validate_credentials("admin", stored):
+        _save_admin_state(state)
+        return stored
+
+    if _validate_credentials("admin", "admin"):
+        return _rotate_admin_password(state)
+
+    if not is_running() and _wait_default_admin_ready():
+        return _rotate_admin_password(state)
+
+    home = ADMIN_STATE
+    workspace = workspace_admin_state()
+    raise RuntimeError(
+        "Sonar is reachable on this computer, but the admin password file was never "
+        f"created at {home} or {workspace}. The default admin/admin login was already "
+        "changed, so this tool cannot invent the password. "
+        + _admin_reset_hint()
+    )
+
+
 def admin_login() -> dict[str, str]:
     """Return local UI login details (URL, username, password, state file path)."""
     state = _load_admin_state()
@@ -411,23 +440,15 @@ def admin_login() -> dict[str, str]:
 
 
 def local_ui_login() -> dict[str, str]:
-    """Login for the Sonar server bound on this machine. Not a remote server."""
-    info = admin_login()
-    if not info["password"]:
-        raise RuntimeError(
-            "No local admin password on this machine. "
-            "Run sonar-local-up here. A password from another computer will be rejected."
-        )
+    """Login for Sonar on this machine. Creates the password file if it is missing."""
     if not is_running():
         raise RuntimeError(
-            "Local SonarQube is not running on this machine. Run sonar-local-up here."
+            "Local SonarQube is not running on this computer. Run sonar-local-up here."
         )
-    if not _validate_credentials(info["username"], info["password"]):
-        raise RuntimeError(
-            "Stored password does not match Sonar on this machine (127.0.0.1:9000). "
-            "A password minted on another host, including a cloud agent, will not log in here. "
-            "Run sonar-local-up on this computer and use the password it prints."
-        )
+    password = _ensure_admin_password()
+    info = admin_login()
+    info["password"] = password
+    info["workspace_state_file"] = str(workspace_admin_state())
     info["valid_for"] = DEFAULT_LOCAL_URL
     return info
 

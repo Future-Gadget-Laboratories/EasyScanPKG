@@ -60,7 +60,7 @@ UI login is per machine. A password printed on a cloud agent or another host is 
 "$BRIDGE/bin/sonar-local-login"
 ```
 
-Open `http://127.0.0.1:9000` on the same computer. Username `admin`. The password is in `~/.config/sft/sonar-local-admin.json` on that computer.
+Open `http://127.0.0.1:9000` on the same computer. Username `admin`. If `~/.config/sft/sonar-local-admin.json` is missing, run `sonar-local-login` on that computer. It creates both that file and `<EasyScanPKG>/.sft/sonar-local-admin.json` (gitignored).
 
 The series lives in `~/.config/sft/credentials/` (mode 600):
 
