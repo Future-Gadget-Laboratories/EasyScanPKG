@@ -40,6 +40,7 @@ REQUIRED_BIN = (
     "easyscan-check",
     "install-skills.sh",
     "sonar-local-credentials",
+    "sonar-local-login",
 )
 
 

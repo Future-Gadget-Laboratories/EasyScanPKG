@@ -31,6 +31,27 @@ class AdminLoginTests(unittest.TestCase):
             self.assertEqual(info["password"], "Secret!1Aa")
             self.assertEqual(info["state_file"], str(state))
 
+    def test_generated_password_is_shell_safe(self) -> None:
+        for _ in range(20):
+            password = ls._generate_admin_password()
+            self.assertGreaterEqual(len(password), 12)
+            self.assertNotRegex(password, r"[!$`\\]")
+            self.assertRegex(password, r"[A-Z]")
+            self.assertRegex(password, r"[a-z]")
+            self.assertRegex(password, r"\d")
+            self.assertIn("#", password)
+
+    def test_local_ui_login_rejects_foreign_password(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            state = Path(tmp) / "sonar-local-admin.json"
+            state.write_text(json.dumps({"admin_password": "FromOtherHost#1"}) + "\n")
+            with mock.patch.object(ls, "ADMIN_STATE", state), mock.patch.object(
+                ls, "is_running", return_value=True
+            ), mock.patch.object(ls, "_validate_credentials", return_value=False):
+                with self.assertRaises(RuntimeError) as caught:
+                    ls.local_ui_login()
+            self.assertIn("this computer", str(caught.exception))
+
     def test_admin_login_missing_state(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             state = Path(tmp) / "missing.json"

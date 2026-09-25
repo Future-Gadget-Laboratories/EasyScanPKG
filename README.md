@@ -48,6 +48,7 @@ Daily: click **EasyScan** on the panel, or run `bin/sonar-desktop`.
 | Credentials (remote) | `./bin/sonar-credentials --cli --test` |
 | Credentials (local) | `./bin/sonar-credentials --local --bootstrap --test` |
 | Local credential series | `./bin/sonar-local-credentials bootstrap\|list\|use NAME` |
+| Local UI login (this machine) | `./bin/sonar-local-login` |
 
 ### Multi-project contexts
 

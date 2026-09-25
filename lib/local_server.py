@@ -353,8 +353,9 @@ def _save_admin_state(data: dict) -> None:
 
 
 def _generate_admin_password() -> str:
-    # SonarQube 26 rejects token_urlsafe-only passwords (needs a special character).
-    return f"{secrets.token_urlsafe(14)}!1Aa"
+    # SonarQube 26 requires a letter, a digit, and a special character.
+    # Avoid ! $ ` \\ — bash history expansion kicks those lines back.
+    return f"Aa1{secrets.token_hex(8)}#"
 
 
 def _admin_reset_hint() -> str:
@@ -405,7 +406,30 @@ def admin_login() -> dict[str, str]:
         "username": "admin",
         "password": str(state.get("admin_password") or ""),
         "state_file": str(ADMIN_STATE),
+        "scope": "this-machine-only",
     }
+
+
+def local_ui_login() -> dict[str, str]:
+    """Login for the Sonar server bound on this machine. Not a remote server."""
+    info = admin_login()
+    if not info["password"]:
+        raise RuntimeError(
+            "No local admin password on this machine. "
+            "Run sonar-local-up here. A password from another computer will be rejected."
+        )
+    if not is_running():
+        raise RuntimeError(
+            "Local SonarQube is not running on this machine. Run sonar-local-up here."
+        )
+    if not _validate_credentials(info["username"], info["password"]):
+        raise RuntimeError(
+            "Stored password does not match Sonar on this machine (127.0.0.1:9000). "
+            "A password minted on another host, including a cloud agent, will not log in here. "
+            "Run sonar-local-up on this computer and use the password it prints."
+        )
+    info["valid_for"] = DEFAULT_LOCAL_URL
+    return info
 
 
 def ensure_token(*, project_key: str | None = None) -> str:

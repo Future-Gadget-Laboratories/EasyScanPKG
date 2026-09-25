@@ -54,6 +54,14 @@ BRIDGE="${SFT_AGENT_BRIDGE:-${BRIDGE:?Set BRIDGE to the EasyScanPKG root}}"
 "$BRIDGE/bin/sonar-local-credentials" use issues
 ```
 
+UI login is per machine. A password printed on a cloud agent or another host is rejected here:
+
+```bash
+"$BRIDGE/bin/sonar-local-login"
+```
+
+Open `http://127.0.0.1:9000` on the same computer. Username `admin`. The password is in `~/.config/sft/sonar-local-admin.json` on that computer.
+
 The series lives in `~/.config/sft/credentials/` (mode 600):
 
 | Name | Use |

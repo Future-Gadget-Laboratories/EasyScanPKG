@@ -53,7 +53,7 @@ def main() -> int:
         print(json.dumps(payload, indent=2))
     else:
         print(f"local SonarQube: {st.url} running={st.running}")
-        print("UI login (open in a browser):")
+        print("UI login for THIS machine only (a cloud/remote password will be rejected):")
         print(f"  url:      {login['url']}")
         print(f"  username: {login['username']}")
         if login["password"]:
