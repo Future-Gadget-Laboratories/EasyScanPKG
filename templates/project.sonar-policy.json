@@ -4,7 +4,24 @@
     "prefer_connected": true
   },
   "scan": {
-    "max_files_per_analyze": 40
+    "max_files_per_analyze": 40,
+    "scanners": {
+      "semgrep": {
+        "config": "p/default"
+      },
+      "clang-tidy": {
+        "compile_commands": "build/compile_commands.json"
+      },
+      "flawfinder": {
+        "enabled": false
+      },
+      "valgrind": {
+        "enabled": false,
+        "command": [
+          "./build/tests"
+        ]
+      }
+    }
   },
   "agent": {
     "must_analyze_on_task_end": true

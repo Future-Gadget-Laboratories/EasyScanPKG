@@ -22,6 +22,7 @@ from docker_util import run_docker
 from env_write import LOCAL_ENV, read_env_file
 from server_health import wait_for_system_up
 from sonar_api import api
+from safe_io import urlopen as safe_urlopen
 
 DEFAULT_LOCAL_URL = "http://127.0.0.1:9000"
 SQ_CONTAINER = "sft-sonarqube"
@@ -117,7 +118,7 @@ def resolve_plugin_url(server_version: str | None = None) -> tuple[str, str, str
         api_url,
         headers={"Accept": "application/vnd.github+json", "User-Agent": "EasyScanPKG"},
     )
-    with urllib.request.urlopen(req, timeout=30) as resp:
+    with safe_urlopen(req, timeout=30) as resp:
         data = json.loads(resp.read().decode("utf-8"))
     for asset in data.get("assets", []):
         name = asset.get("name") or ""
@@ -128,7 +129,7 @@ def resolve_plugin_url(server_version: str | None = None) -> tuple[str, str, str
 
 def fetch_server_version(url: str = DEFAULT_LOCAL_URL) -> str | None:
     try:
-        with urllib.request.urlopen(f"{url.rstrip('/')}/api/server/version", timeout=10) as resp:
+        with safe_urlopen(f"{url.rstrip('/')}/api/server/version", timeout=10) as resp:
             return resp.read().decode("utf-8").strip() or None
     except OSError:
         return None
@@ -141,7 +142,7 @@ def download_plugin_jar(url: str, jar_name: str, *, cache_dir: Path | None = Non
     if dest.is_file() and dest.stat().st_size > 0:
         return dest
     req = urllib.request.Request(url, headers={"User-Agent": "EasyScanPKG"})
-    with urllib.request.urlopen(req, timeout=180) as resp:
+    with safe_urlopen(req, timeout=180) as resp:
         dest.write_bytes(resp.read())
     return dest
 
@@ -237,7 +238,7 @@ def language_has_cxx(url: str, token: str | None = None) -> bool:
     if not token:
         # Unauthenticated languages/list usually works
         try:
-            with urllib.request.urlopen(
+            with safe_urlopen(
                 f"{url.rstrip('/')}/api/languages/list", timeout=10
             ) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
@@ -289,7 +290,7 @@ def _settings_set_multi(
         "Basic " + base64.b64encode(f"{token}:".encode()).decode("ascii"),
     )
     try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
+        with safe_urlopen(req, timeout=30) as resp:
             return resp.status, resp.read().decode("utf-8")
     except urllib.error.HTTPError as exc:
         return exc.code, exc.read().decode("utf-8", errors="replace")

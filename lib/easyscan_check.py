@@ -6,10 +6,9 @@ import json
 import os
 import shutil
 import subprocess
-import urllib.error
-import urllib.request
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
+from safe_io import urlopen as safe_urlopen
 
 
 REQUIRED_SKILLS = (
@@ -32,6 +31,8 @@ REQUIRED_BIN = (
     "sonar-mcp-up",
     "sonar-scan",
     "sonar-issues",
+    "easyscan-scan",
+    "easyscan-install-scanners",
     "sonar-project",
     "sonar-context",
     "sonar-profile",
@@ -220,7 +221,7 @@ def check_local_env(report: CheckReport, *, require_local: bool) -> None:
 
 def check_local_server(report: CheckReport, *, require_local: bool) -> None:
     try:
-        with urllib.request.urlopen("http://127.0.0.1:9000/api/system/status", timeout=3) as resp:
+        with safe_urlopen("http://127.0.0.1:9000/api/system/status", timeout=3) as resp:
             data = json.loads(resp.read().decode("utf-8"))
             up = data.get("status") == "UP"
             report.add(
@@ -393,6 +394,22 @@ def check_compose_optional(report: CheckReport) -> None:
         )
 
 
+def check_scanner_tools(report: CheckReport) -> None:
+    """Soft: how many easyscan-scan tools are installed (auto mode skips the rest)."""
+    try:
+        from scanner_install import CATALOG, status
+
+        results = status([t for t in CATALOG if t.default])
+    except Exception as exc:  # noqa: BLE001 — informational only
+        report.add(CheckItem("scanner_tools", False, "soft", str(exc)))
+        return
+    missing = [r.name for r in results if r.status != "present"]
+    detail = f"{len(results) - len(missing)}/{len(results)} scanner tools installed"
+    if missing:
+        detail += f"; missing: {', '.join(missing)} — run bin/easyscan-install-scanners"
+    report.add(CheckItem("scanner_tools", not missing, "soft", detail))
+
+
 def run_checks(
     *,
     offline: bool = False,
@@ -420,6 +437,7 @@ def run_checks(
         check_desktop(report)
         check_active_context(report)
         check_issue_checklist(report, root)
+        check_scanner_tools(report)
         check_unit_tests(report, root, skip_tests=skip_tests or offline or quick)
     return report
 

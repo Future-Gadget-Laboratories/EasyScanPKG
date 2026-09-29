@@ -66,6 +66,28 @@ Standard dev commands are documented in `README.md` and `CONTRIBUTING.md`:
   runs the scanner over Docker `--network=host`, then
   `./bin/sonar-issues --local list --project-key <key>` /
   `./bin/sonar-issues --local export --workspace <PROJECT> --refresh` produces
-  `.sft/issue-checklist.md`. Note: `sonar-scan`'s own post-scan issue printout
-  can read `0` due to a brief server indexing delay even when the analysis
-  succeeded — re-query with `sonar-issues list` to see the real results.
+  `.sft/issue-checklist.md` (schema `easyscan.issue-checklist/v2`, `source=sonar`).
+  Note: `sonar-scan`'s own post-scan issue printout can read `0` due to a brief
+  server indexing delay even when the analysis succeeded — re-query with
+  `sonar-issues list` to see the real results.
+
+- **Multi-scanner stage:** `./bin/easyscan-scan --workspace <PROJECT>` detects
+  the project's file types and runs every installed scanner that applies (auto
+  mode), each on only its own files, then merges into the same checklist. Preview
+  with `--plan`; `--mode manual` restores "Sonar only unless `--enable`".
+  Explicit `--enable`/`--disable`, `EASYSCAN_ENABLE_*`, `EASYSCAN_SCANNERS`, or
+  `.sft/sonar-policy.json` → `scan.scanners` always beat auto. Dynamic adapters
+  (`asan`, `ubsan`, `valgrind`, `drmemory`) only run with `--*-command -- <argv>`.
+  CI runs `--fail-on-error --fail-on-severity medium`: a crashed tool or any
+  finding at MAJOR (medium) or above fails the build, so fix findings (or mark
+  a verified false positive inline, e.g. `# nosec B310 — reason`) before pushing.
+  Use `lib/safe_io.py` (`urlopen`, `parse_xml`) instead of raw `urllib`/`ElementTree`.
+
+- **Scanner tools** are host binaries installed by
+  `./bin/easyscan-install-scanners` (apt → isolated pip venv → SHA-256-verified
+  GitHub release). `install.sh`/`commission.sh` run it unless `--skip-scanners`.
+  Non-distro tools land in `~/.config/sft/scanners/bin`, which the scanners search
+  automatically. Check with `--status`. In this cloud VM apt and PyPI work, but
+  GitHub release downloads and `semgrep.dev` are blocked by the egress policy, so
+  `osv-scanner` will not install and semgrep's registry rules (`p/default`) fail —
+  expected here, not a bug; CI (`scanner-harness` job) exercises both.

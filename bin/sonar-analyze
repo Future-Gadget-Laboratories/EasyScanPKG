@@ -17,6 +17,7 @@ from _bootstrap import bootstrap
 bootstrap()
 
 from ide_port import find_ide_port  # noqa: E402
+from safe_io import urlopen as safe_urlopen  # noqa: E402
 from policy_db import resolve_store  # noqa: E402
 
 
@@ -33,7 +34,7 @@ def analyze_files(port: int, paths: list[str]) -> tuple[bool, str]:
         method="POST",
     )
     try:
-        with urllib.request.urlopen(req, timeout=2) as response:
+        with safe_urlopen(req, timeout=2) as response:
             response.read()
         return True, f"submitted {len(paths)} file(s) to IDE port {port}"
     except (urllib.error.URLError, TimeoutError, OSError) as exc:

@@ -11,6 +11,7 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
+from safe_io import urlopen as safe_urlopen
 
 START_PORT = 64120
 END_PORT = 64130
@@ -109,7 +110,7 @@ def check_port(port: int, expected_ide: str | None = None) -> IdeStatus | None:
         url = f"http://{host}:{port}/sonarlint/api/status"  # NOSONAR python:S5332
         req = urllib.request.Request(url, headers={"Origin": "ai-agent://sft-bridge"})
         try:
-            with urllib.request.urlopen(req, timeout=TIMEOUT_S) as response:
+            with safe_urlopen(req, timeout=TIMEOUT_S) as response:
                 if response.status != 200:
                     continue
                 data = json.loads(response.read().decode("utf-8"))
