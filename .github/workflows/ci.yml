@@ -48,4 +48,5 @@ jobs:
         with:
           name: easyscan-issue-checklist
           path: .sft/issue-checklist.*
-          if-no-files-found: ignore
+          include-hidden-files: true  # .sft/ is a dot-directory
+          if-no-files-found: warn
