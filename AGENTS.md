@@ -80,7 +80,10 @@ Standard dev commands are documented in `README.md` and `CONTRIBUTING.md`:
   Explicit `--enable`/`--disable`, `EASYSCAN_ENABLE_*`, `EASYSCAN_SCANNERS`, or
   `.sft/sonar-policy.json` → `scan.scanners` always beat auto. Dynamic adapters
   (`asan`, `ubsan`, `valgrind`, `drmemory`) only run with `--*-command -- <argv>`.
-  Use `--fail-on-error` in CI so a crashed tool is not mistaken for a clean scan.
+  CI runs `--fail-on-error --fail-on-severity medium`: a crashed tool or any
+  finding at MAJOR (medium) or above fails the build, so fix findings (or mark
+  a verified false positive inline, e.g. `# nosec B310 — reason`) before pushing.
+  Use `lib/safe_io.py` (`urlopen`, `parse_xml`) instead of raw `urllib`/`ElementTree`.
 
 - **Scanner tools** are host binaries installed by
   `./bin/easyscan-install-scanners` (apt → isolated pip venv → SHA-256-verified

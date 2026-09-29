@@ -148,6 +148,10 @@ while Sonar indexes. Re-query with `./bin/sonar-issues --local list` or
    default), then merges findings into the unified checklist
    (schema `easyscan.issue-checklist/v2`). Each issue carries its `source`.
 
+Every tool's levels are normalized onto one scale — `BLOCKER > CRITICAL > MAJOR >
+MINOR > INFO` (bandit/semgrep MEDIUM → MAJOR, HIGH/ERROR → CRITICAL, LOW → MINOR) —
+which is what `--fail-on-severity` compares against.
+
 Scanners that are skipped are listed with the reason (`no C/C++ files`,
 `not installed — run bin/easyscan-install-scanners`, `sonar server not ready`,
 …) both in the scan plan and in the checklist's `sources_skipped`. A scanner
@@ -191,7 +195,8 @@ only, every other tool opt-in via `--enable`.
 | `--workspace PATH` | Project root (default: cwd) |
 | `--mode auto\|manual` | `auto` (default): every installed, applicable tool. `manual`: Sonar + explicit `--enable` only |
 | `--plan` | Print which scanners would run on which files, then exit (add `--json` for machine output) |
-| `--fail-on-error` | Exit 2 if a selected scanner crashed (findings never fail the run) — use in CI |
+| `--fail-on-error` | Exit 2 if a selected scanner crashed — use in CI |
+| `--fail-on-severity LEVEL` | Exit 3 if any open finding is at/above `LEVEL` (`info`, `minor`/`low`, `major`/`medium`, `critical`/`high`, `blocker`). This repo's CI uses `medium` |
 | `--project-key KEY` | Sonar project key |
 | `--context NAME` | Named analysis context (`sonar-context`) |
 | `--local` | Prefer local Sonar credentials |
@@ -221,8 +226,8 @@ only, every other tool opt-in via `--enable`.
 # Everything that applies (default)
 ./bin/easyscan-scan --workspace "$PWD"
 
-# Same, but never touch Sonar and fail CI if a tool breaks
-./bin/easyscan-scan --workspace "$PWD" --disable sonar --fail-on-error
+# CI gate: fail if a tool breaks or anything medium (MAJOR) or worse is found
+./bin/easyscan-scan --workspace "$PWD" --fail-on-error --fail-on-severity medium
 
 # Only secrets + dependency CVEs
 ./bin/easyscan-scan --workspace "$PWD" --scanners gitleaks,pip-audit,osv
@@ -309,6 +314,7 @@ A scanner forced on still gets auto-routed paths unless you set `paths`.
 | Variable | Effect |
 | --- | --- |
 | `EASYSCAN_MODE` | `auto` (default) or `manual` |
+| `EASYSCAN_FAIL_ON_SEVERITY` | Default for `--fail-on-severity` (e.g. `medium`) |
 | `EASYSCAN_SCANNERS` | Comma list → exclusive enable set (like `--scanners`) |
 | `EASYSCAN_ENABLE_<NAME>` | `1`/`true`/`on` or `0`/`false`/`off` per scanner |
 | `EASYSCAN_EXCLUDE_DIRS` | Extra directory names the harness never routes (e.g. `vendor,third_party`) |

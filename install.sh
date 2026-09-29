@@ -137,11 +137,10 @@ fi
 
 # Docker images
 if command -v docker >/dev/null 2>&1; then
-  DOCKER_PULL='docker pull'
+  USE_SG=0
   if ! docker info >/dev/null 2>&1; then
     if groups | grep -qw docker && command -v sg >/dev/null 2>&1; then
-      DOCKER_PULL='sg docker -c "docker pull'
-      DOCKER_SUFFIX='"'
+      USE_SG=1
       echo "NOTE: using 'sg docker' — your shell has not refreshed the docker group yet."
       echo "      For a permanent fix: log out/in, or run: newgrp docker"
     else
@@ -149,7 +148,7 @@ if command -v docker >/dev/null 2>&1; then
     fi
   fi
   for img in sonarsource/sonarqube-mcp sonarqube:community postgres:16-alpine sonarsource/sonar-scanner-cli; do
-    if [[ "$DOCKER_PULL" == "docker pull" ]]; then
+    if [[ "$USE_SG" -eq 0 ]]; then
       docker pull "$img" || echo "WARN: pull failed for $img"
     else
       sg docker -c "docker pull $img" || echo "WARN: pull failed for $img"

@@ -18,6 +18,7 @@ from pathlib import Path
 from docker_util import run_docker
 from env_write import LOCAL_ENV, read_env_file, update_local_credentials
 from server_health import AuthStatus, check_server, wait_for_system_up
+from safe_io import urlopen as safe_urlopen
 
 DEFAULT_LOCAL_URL = "http://127.0.0.1:9000"
 ADMIN_STATE = Path.home() / ".config" / "sft" / "sonar-local-admin.json"
@@ -315,7 +316,7 @@ def _api(
     if user is not None:
         req.add_header("Authorization", _basic_auth(user, password))
     try:
-        with urllib.request.urlopen(req, timeout=15) as resp:
+        with safe_urlopen(req, timeout=15) as resp:
             return resp.status, resp.read().decode("utf-8")
     except urllib.error.HTTPError as exc:
         return exc.code, exc.read().decode("utf-8", errors="replace")

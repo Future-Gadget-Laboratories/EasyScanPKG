@@ -8,6 +8,7 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from enum import Enum
+from safe_io import urlopen as safe_urlopen
 
 
 class AuthStatus(Enum):
@@ -41,7 +42,7 @@ def check_server(url: str, token: str | None, *, timeout: float = 5.0) -> Health
     req = urllib.request.Request(validate_url, method="GET")
     req.add_header("Authorization", _auth_header(token))
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with safe_urlopen(req, timeout=timeout) as resp:
             body = resp.read().decode("utf-8")
             if resp.status != 200:
                 return HealthResult(
@@ -78,7 +79,7 @@ def wait_for_system_up(url: str, *, timeout_s: float = 180.0, poll_s: float = 3.
     deadline = time.time() + timeout_s
     while time.time() < deadline:
         try:
-            with urllib.request.urlopen(f"{base}/api/system/status", timeout=poll_s) as resp:
+            with safe_urlopen(f"{base}/api/system/status", timeout=poll_s) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
                 if data.get("status") == "UP":
                     return True

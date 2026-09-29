@@ -22,7 +22,8 @@ jobs:
 
   scanner-harness:
     # Installs every default scanner tool and runs the auto-routed scan on this
-    # repo (dogfood). Findings never fail the job; a crashed scanner does.
+    # repo (dogfood). Fails on a crashed scanner or any finding at medium
+    # (MAJOR) severity or above.
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -40,8 +41,8 @@ jobs:
           ./bin/easyscan-install-scanners --status
       - name: Scan plan
         run: ./bin/easyscan-scan --workspace "$PWD" --plan
-      - name: Multi-scanner scan (auto mode)
-        run: ./bin/easyscan-scan --workspace "$PWD" --fail-on-error
+      - name: Multi-scanner scan (auto mode, gate at medium+)
+        run: ./bin/easyscan-scan --workspace "$PWD" --fail-on-error --fail-on-severity medium
       - name: Upload issue checklist
         if: always()
         uses: actions/upload-artifact@v4

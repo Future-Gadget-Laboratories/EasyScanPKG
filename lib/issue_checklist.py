@@ -67,7 +67,8 @@ def stable_finding_key(
     if native_key:
         return str(native_key)
     digest = hashlib.sha1(
-        f"{source}|{rule}|{path}|{line}|{message}".encode("utf-8")
+        f"{source}|{rule}|{path}|{line}|{message}".encode("utf-8"),
+        usedforsecurity=False,  # stable checklist id, not a security digest
     ).hexdigest()[:12]
     return f"{source}:{digest}"
 

@@ -6,10 +6,9 @@ import json
 import os
 import shutil
 import subprocess
-import urllib.error
-import urllib.request
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
+from safe_io import urlopen as safe_urlopen
 
 
 REQUIRED_SKILLS = (
@@ -222,7 +221,7 @@ def check_local_env(report: CheckReport, *, require_local: bool) -> None:
 
 def check_local_server(report: CheckReport, *, require_local: bool) -> None:
     try:
-        with urllib.request.urlopen("http://127.0.0.1:9000/api/system/status", timeout=3) as resp:
+        with safe_urlopen("http://127.0.0.1:9000/api/system/status", timeout=3) as resp:
             data = json.loads(resp.read().decode("utf-8"))
             up = data.get("status") == "UP"
             report.add(

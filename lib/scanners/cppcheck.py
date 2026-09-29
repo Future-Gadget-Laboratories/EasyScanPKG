@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-import xml.etree.ElementTree as ET
+import xml.etree.ElementTree as ET  # nosec B405 — parsing goes through safe_io
 from pathlib import Path
 from typing import Any, Mapping
 
 from scanners._util import ensure_exit, relativize, require_binary, resolve_paths, run_command
+from safe_io import parse_xml
 from scanners.base import Finding
 
 _SEV = {
@@ -23,7 +24,7 @@ def parse_cppcheck_xml(text: str, *, workspace: Path | None = None) -> list[Find
     """Parse cppcheck XML (version 2) into Findings."""
     findings: list[Finding] = []
     try:
-        root = ET.fromstring(text)
+        root = parse_xml(text)
     except ET.ParseError:
         return findings
     for err in root.iter("error"):

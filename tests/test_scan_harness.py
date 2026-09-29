@@ -18,6 +18,7 @@ sys.path.insert(0, str(ROOT / "lib"))
 from scanners._util import ensure_exit, find_binary  # noqa: E402
 from scanners.config import AUTO, DEFAULT_SCANNER_CONFIG  # noqa: E402
 from scanners.detect import detect_project  # noqa: E402
+from scanners.gate import gated_issues, parse_threshold, summarize  # noqa: E402
 from scanners.routing import MODE_MANUAL, plan_scanners  # noqa: E402
 
 
@@ -208,6 +209,73 @@ class EnsureExitTests(unittest.TestCase):
     def test_custom_ok_codes(self) -> None:
         proc = subprocess.CompletedProcess(["x"], 128, stdout="", stderr="")
         ensure_exit(proc, "osv-scanner", (0, 1, 128))
+
+
+class GateTests(unittest.TestCase):
+    issues = [
+        {"source": "bandit", "severity": "CRITICAL", "status": "OPEN"},
+        {"source": "semgrep", "severity": "MAJOR", "status": "OPEN"},
+        {"source": "ruff", "severity": "MINOR", "status": "OPEN"},
+        {"source": "sonar", "severity": "BLOCKER", "status": "RESOLVED"},
+    ]
+
+    def test_aliases(self) -> None:
+        self.assertEqual(parse_threshold("medium"), "MAJOR")
+        self.assertEqual(parse_threshold("High"), "CRITICAL")
+        self.assertEqual(parse_threshold("low"), "MINOR")
+        self.assertEqual(parse_threshold("blocker"), "BLOCKER")
+        with self.assertRaisesRegex(ValueError, "unknown severity"):
+            parse_threshold("severe")
+
+    def test_medium_and_above(self) -> None:
+        failing = gated_issues(self.issues, "MAJOR")
+        self.assertEqual([i["source"] for i in failing], ["bandit", "semgrep"])
+        self.assertEqual(summarize(failing), "bandit 1, semgrep 1")
+
+    def test_resolved_never_gate(self) -> None:
+        self.assertEqual(gated_issues(self.issues, "BLOCKER"), [])
+
+
+class GateCliTests(unittest.TestCase):
+    """easyscan-scan exits 3 when a finding meets --fail-on-severity."""
+
+    def _run(self, *extra: str) -> subprocess.CompletedProcess[str]:
+        script = ROOT / "bin" / "easyscan-scan"
+        # Fake ruff that reports one finding; S (security) codes map to MAJOR.
+        fake = (
+            "#!/bin/sh\n"
+            "echo '[{\"code\":\"S602\",\"filename\":\"'\"$PWD\"'/pkg/mod.py\","
+            "\"message\":\"undefined name\",\"location\":{\"row\":1}}]'\n"
+            "exit 1\n"
+        )
+        with tempfile.TemporaryDirectory() as ws, tempfile.TemporaryDirectory() as tools:
+            _write(Path(ws), "pkg/mod.py", "x = y\n")
+            _write(Path(tools), "bin/ruff", fake, executable=True)
+            env = {
+                **os.environ,
+                "EASYSCAN_TOOLS_HOME": tools,
+                "PATH": "/usr/bin:/bin",
+                "SONARQUBE_URL": "http://127.0.0.1:1",
+            }
+            return subprocess.run(
+                [sys.executable, str(script), "--workspace", ws, "--scanners", "ruff", *extra],
+                capture_output=True, text=True, env=env, check=False, timeout=120,
+            )
+
+    def test_gate_fails_on_major(self) -> None:
+        proc = self._run("--fail-on-severity", "medium")
+        self.assertEqual(proc.returncode, 3, proc.stdout + proc.stderr)
+        self.assertIn("Severity gate MAJOR+: 1 finding(s) (ruff 1) — FAIL", proc.stdout)
+
+    def test_gate_passes_below_threshold(self) -> None:
+        proc = self._run("--fail-on-severity", "critical")
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertIn("— pass", proc.stdout)
+
+    def test_no_gate_by_default(self) -> None:
+        proc = self._run()
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertNotIn("Severity gate", proc.stdout)
 
 
 class FindBinaryTests(unittest.TestCase):

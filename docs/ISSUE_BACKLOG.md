@@ -23,6 +23,7 @@ Tooling readiness for one-click EasyScanPKG (local Sonar + agent bridge).
 | T15 | Default scanner tool installation | `bin/easyscan-install-scanners` (apt → pip venv → SHA-256-verified GitHub release); run by `install.sh`/`commission.sh`; `easyscan-check` soft-reports coverage |
 | T16 | Harness routes code to every applicable tool | `lib/scanners/detect.py` + `routing.py`: auto mode by default, `--plan`, `--mode manual`, `--fail-on-error`; crashed tools reported as errors, not clean |
 | T17 | Scanners in CI | `scanner-harness` job installs all default tools and dogfoods `easyscan-scan` |
+| T18 | Severity gate | `easyscan-scan --fail-on-severity LEVEL` (exit 3); CI fails on medium (MAJOR)+. `lib/safe_io.py` hardens URL/XML handling to keep the repo clean |
 
 Gate before publish: `./bin/easyscan-check --offline` and unit tests pass.
 

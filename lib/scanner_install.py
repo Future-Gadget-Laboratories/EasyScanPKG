@@ -28,6 +28,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterable, Sequence
 
 from scanners._util import find_binary, tools_bin_dir, tools_home
+from safe_io import urlopen as safe_urlopen
 
 GITHUB_API = "https://api.github.com"
 USER_AGENT = "EasyScanPKG-scanner-installer"
@@ -284,7 +285,7 @@ def _github_json(url: str) -> Any:
     token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
     if token:
         req.add_header("Authorization", f"Bearer {token}")
-    with urllib.request.urlopen(req, timeout=30) as resp:
+    with safe_urlopen(req, timeout=30) as resp:
         return json.loads(resp.read().decode("utf-8"))
 
 
@@ -329,14 +330,14 @@ def expected_sha256(release: dict[str, Any], asset: dict[str, Any], fetch_text: 
 
 def _fetch_text(url: str) -> str:
     req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
-    with urllib.request.urlopen(req, timeout=60) as resp:
+    with safe_urlopen(req, timeout=60) as resp:
         return resp.read().decode("utf-8", "replace")
 
 
 def _download(url: str, dest: Path) -> str:
     sha = hashlib.sha256()
     req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
-    with urllib.request.urlopen(req, timeout=300) as resp, dest.open("wb") as fh:
+    with safe_urlopen(req, timeout=300) as resp, dest.open("wb") as fh:
         while chunk := resp.read(1 << 20):
             sha.update(chunk)
             fh.write(chunk)
@@ -353,10 +354,9 @@ def _safe_extract(archive: tarfile.TarFile, dest: Path) -> None:
             link = (target.parent / member.linkname).resolve()
             if root not in link.parents and link != root:
                 raise RuntimeError(f"unsafe link in archive: {member.name}")
-    if hasattr(tarfile, "data_filter"):
-        archive.extractall(dest, filter="data")
-    else:  # pragma: no cover — Python < 3.11.4
-        archive.extractall(dest)
+    if not hasattr(tarfile, "data_filter"):  # pragma: no cover — Python < 3.10.12 / 3.11.4
+        raise RuntimeError("this Python lacks tarfile extraction filters; upgrade Python to unpack releases")
+    archive.extractall(dest, filter="data")  # nosec B202 — members validated above + "data" filter
 
 
 def install_github(method: GitHubRelease, binary: str, *, runner: Runner, allow_unverified: bool) -> tuple[str | None, str]:

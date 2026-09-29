@@ -33,6 +33,7 @@ from scanners import (  # noqa: E402
     resolve_scanner_config,
     run_scanners,
 )
+from scanners.gate import gated_issues, parse_threshold, summarize  # noqa: E402
 
 _SCANNER_HELP = (
     "sonar, clang-tidy, drmemory, cppcheck, ruff, shellcheck, semgrep, bandit, "
@@ -100,7 +101,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--fail-on-error",
         action="store_true",
-        help="Exit 2 if any scanner that was selected to run crashed (findings never fail the run)",
+        help="Exit 2 if any scanner that was selected to run crashed",
+    )
+    parser.add_argument(
+        "--fail-on-severity",
+        metavar="LEVEL",
+        default=os.environ.get("EASYSCAN_FAIL_ON_SEVERITY") or None,
+        help=(
+            "Exit 3 if any open finding is at or above LEVEL: info, minor/low, "
+            "major/medium, critical/high, blocker. Env: EASYSCAN_FAIL_ON_SEVERITY"
+        ),
     )
     parser.add_argument(
         "--list-scanners",
@@ -151,6 +161,12 @@ def main(argv: list[str] | None = None) -> int:
         help="Sonar type filter CSV (BUG,VULNERABILITY,CODE_SMELL)",
     )
     args = parser.parse_args(argv)
+    threshold = None
+    if args.fail_on_severity:
+        try:
+            threshold = parse_threshold(args.fail_on_severity)
+        except ValueError as exc:
+            parser.error(str(exc))
 
     if args.list_scanners:
         print("\n".join(available_scanners()))
@@ -276,9 +292,20 @@ def main(argv: list[str] | None = None) -> int:
         if payload["resolved"]:
             print("Done — checklist empty.")
     errored = sorted(k for k, v in sources_skipped.items() if str(v).startswith("error:"))
+    failing = gated_issues(payload["issues"], threshold) if threshold else []
+    status_out = sys.stderr if args.json else sys.stdout
+    if threshold:
+        verdict = "FAIL" if failing else "pass"
+        detail = f" ({summarize(failing)})" if failing else ""
+        print(
+            f"Severity gate {threshold}+: {len(failing)} finding(s){detail} — {verdict}",
+            file=status_out,
+        )
     if errored and args.fail_on_error:
         print(f"Scanner errors: {', '.join(errored)}", file=sys.stderr)
         return 2
+    if failing:
+        return 3
     return 0 if not errored or sources_run else 1
 
 

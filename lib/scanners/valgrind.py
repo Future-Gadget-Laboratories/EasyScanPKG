@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-import xml.etree.ElementTree as ET
+import xml.etree.ElementTree as ET  # nosec B405 — parsing goes through safe_io
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 import tempfile
 
 from scanners._util import relativize, require_binary, run_command
+from safe_io import parse_xml
 from scanners.base import Finding
 
 
@@ -29,7 +30,7 @@ def parse_valgrind_xml(text: str, *, workspace: Path | None = None) -> list[Find
     if not text.strip():
         return []
     try:
-        root = ET.fromstring(text)
+        root = parse_xml(text)
     except ET.ParseError:
         return []
     findings: list[Finding] = []

@@ -11,6 +11,7 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Any
+from safe_io import urlopen as safe_urlopen
 
 
 def auth_header(token: str) -> str:
@@ -48,7 +49,7 @@ def api(
     for key, value in headers.items():
         req.add_header(key, value)
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with safe_urlopen(req, timeout=timeout) as resp:
             body = resp.read().decode("utf-8")
             return resp.status, _parse_body(body)
     except urllib.error.HTTPError as exc:
@@ -74,7 +75,7 @@ def api_raw(
     req = urllib.request.Request(url, method=method)
     req.add_header("Authorization", auth_header(token))
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with safe_urlopen(req, timeout=timeout) as resp:
             return resp.status, resp.read()
     except urllib.error.HTTPError as exc:
         return exc.code, exc.read()
@@ -118,7 +119,7 @@ def api_multipart(
     req.add_header("Authorization", auth_header(token))
     req.add_header("Content-Type", f"multipart/form-data; boundary={boundary}")
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with safe_urlopen(req, timeout=timeout) as resp:
             raw = resp.read().decode("utf-8")
             return resp.status, _parse_body(raw)
     except urllib.error.HTTPError as exc:
