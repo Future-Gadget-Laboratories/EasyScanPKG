@@ -3,22 +3,23 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any, Mapping
 
 from scanners._util import ensure_exit, relativize, require_binary, resolve_paths, run_command
 from scanners.base import Finding
 
-# Ruff uses letter prefixes; treat security-ish codes as MAJOR, else MINOR/MAJOR by default.
-_MAJOR_PREFIXES = ("S", "B", "BLE", "T", "PGH")
+# Ruff codes are <family letters><digits>. Security (S), bugbear (B), blind except
+# (BLE), debugger/print (T), and pygrep hooks (PGH) are MAJOR; everything else —
+# including look-alike families such as SIM (simplify) — is MINOR.
+_MAJOR_FAMILIES = frozenset({"S", "B", "BLE", "T", "PGH"})
+_FAMILY_RE = re.compile(r"^([A-Z]+)")
 
 
 def _severity_for_code(code: str) -> str:
-    upper = (code or "").upper()
-    for prefix in _MAJOR_PREFIXES:
-        if upper.startswith(prefix):
-            return "MAJOR"
-    return "MINOR"
+    match = _FAMILY_RE.match((code or "").upper())
+    return "MAJOR" if match and match.group(1) in _MAJOR_FAMILIES else "MINOR"
 
 
 def parse_ruff_json(text: str, *, workspace: Path | None = None) -> list[Finding]:

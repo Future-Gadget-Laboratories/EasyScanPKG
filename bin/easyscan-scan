@@ -301,6 +301,14 @@ def main(argv: list[str] | None = None) -> int:
             f"Severity gate {threshold}+: {len(failing)} finding(s){detail} — {verdict}",
             file=status_out,
         )
+        for issue in failing[:50]:
+            print(
+                f"  {issue.get('severity')} {issue.get('rule')} "
+                f"{issue.get('file')}:{issue.get('line')} — {str(issue.get('message'))[:120]}",
+                file=status_out,
+            )
+        if len(failing) > 50:
+            print(f"  … {len(failing) - 50} more in the checklist", file=status_out)
     if errored and args.fail_on_error:
         print(f"Scanner errors: {', '.join(errored)}", file=sys.stderr)
         return 2

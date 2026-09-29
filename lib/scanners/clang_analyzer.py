@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import plistlib
+from xml.parsers.expat import ExpatError  # nosec B407 — only used to catch parse errors
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -89,7 +90,7 @@ def _load_plist_reports(report_dir: Path, workspace: Path) -> list[Finding]:
         try:
             with plist_path.open("rb") as fh:
                 data = plistlib.load(fh)
-        except Exception:  # noqa: BLE001
+        except (OSError, ValueError, ExpatError):  # unreadable or malformed plist
             continue
         if isinstance(data, dict):
             findings.extend(parse_clang_analyzer_plist(data, workspace=workspace))

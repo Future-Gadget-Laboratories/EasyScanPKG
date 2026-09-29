@@ -125,7 +125,7 @@ def _try_local_fallback(
     if not is_running():
         try:
             start(wait=True)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 — fallback must not crash spin-up; error is recorded
             store.record_event("local_start_failed", {"error": str(exc)})
             if health.status == AuthStatus.MISSING_CREDENTIALS:
                 return None
@@ -157,7 +157,7 @@ def _try_local_fallback(
             prompted=prompted,
             credentials_saved=credentials_saved,
         )
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 — fallback must not crash spin-up; error is recorded
         store.record_event("local_fallback_failed", {"error": str(exc)})
         return None
 

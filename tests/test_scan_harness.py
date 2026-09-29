@@ -232,6 +232,15 @@ class GateTests(unittest.TestCase):
         self.assertEqual([i["source"] for i in failing], ["bandit", "semgrep"])
         self.assertEqual(summarize(failing), "bandit 1, semgrep 1")
 
+    def test_ruff_families(self) -> None:
+        from scanners.ruff import _severity_for_code
+
+        for code in ("S112", "B006", "BLE001", "T201", "PGH003"):
+            self.assertEqual(_severity_for_code(code), "MAJOR", code)
+        # Look-alike families must not be mistaken for security (S) / bugbear (B).
+        for code in ("SIM117", "SLF001", "E501", "F401", "PLR0913", ""):
+            self.assertEqual(_severity_for_code(code), "MINOR", code)
+
     def test_resolved_never_gate(self) -> None:
         self.assertEqual(gated_issues(self.issues, "BLOCKER"), [])
 
@@ -266,6 +275,7 @@ class GateCliTests(unittest.TestCase):
         proc = self._run("--fail-on-severity", "medium")
         self.assertEqual(proc.returncode, 3, proc.stdout + proc.stderr)
         self.assertIn("Severity gate MAJOR+: 1 finding(s) (ruff 1) — FAIL", proc.stdout)
+        self.assertIn("MAJOR ruff:S602 pkg/mod.py:1", proc.stdout)
 
     def test_gate_passes_below_threshold(self) -> None:
         proc = self._run("--fail-on-severity", "critical")
