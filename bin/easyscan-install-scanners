@@ -91,6 +91,10 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.status:
         results = status(tools if (args.only or args.skip or args.workspace) else None)
+        selected = {t.name for t in tools}
+        for r in results:
+            if r.name not in selected and r.status == "missing":
+                r.status = "opt-in"  # not part of the requested set; never a failure
         if args.json:
             print(json.dumps({"tools": [asdict(r) for r in results], "builtin": builtin_notes()}, indent=2))
         else:
@@ -99,7 +103,7 @@ def main(argv: list[str] | None = None) -> int:
             width = max((len(r.name) for r in results), default=8)
             for name, note in builtin_notes().items():
                 print(f"  {name.ljust(width)}  builtin   {note}")
-        return 0 if all(r.status == "present" for r in results) else 1
+        return 0 if all(r.status in {"present", "opt-in"} for r in results) else 1
 
     log = (lambda _msg: None) if args.json else print
     runner = Runner(dry_run=args.dry_run, interactive=not args.non_interactive, log=log)

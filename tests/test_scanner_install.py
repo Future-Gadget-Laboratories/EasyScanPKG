@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import io
 import os
+import subprocess
 import sys
 import tarfile
 import tempfile
@@ -195,6 +196,33 @@ class InstallOrchestrationTests(unittest.TestCase):
             results = si.install_tools(tools, runner=runner, use_github=False)
         self.assertEqual(results[0].status, "failed")
         self.assertIn("disabled", results[0].detail)
+
+
+class StatusCliTests(unittest.TestCase):
+    """--status exits 0 when every requested tool is present; opt-in tools don't count."""
+
+    def _status(self, tools_home: str, *args: str) -> subprocess.CompletedProcess[str]:
+        env = {**os.environ, "EASYSCAN_TOOLS_HOME": tools_home, "PATH": "/nonexistent"}
+        return subprocess.run(
+            [sys.executable, str(ROOT / "bin" / "easyscan-install-scanners"), "--status", *args],
+            capture_output=True, text=True, env=env, check=False, timeout=60,
+        )
+
+    def test_opt_in_tools_do_not_fail_status(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            bin_dir = Path(tmp) / "bin"
+            bin_dir.mkdir()
+            for tool in si.CATALOG:
+                if tool.default:
+                    path = bin_dir / tool.binary
+                    path.write_text("#!/bin/sh\n")
+                    path.chmod(0o755)
+            proc = self._status(tmp)
+            self.assertEqual(proc.returncode, 0, proc.stdout)
+            self.assertIn("opt-in", proc.stdout)
+            self.assertEqual(self._status(tmp, "--with", "drmemory").returncode, 1)
+            (bin_dir / "osv-scanner").unlink()
+            self.assertEqual(self._status(tmp).returncode, 1)
 
 
 if __name__ == "__main__":
