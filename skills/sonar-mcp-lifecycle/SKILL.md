@@ -105,4 +105,4 @@ Contexts store URL + `token_ref` (path / `env:VAR`) — never raw tokens in `pol
 
 - Analysis workflow: `sonar-agent-analysis`
 - Local projects/scan/issues: `sonar-local-ops`
-- C# construction: `csharp-sonarqube`
+- C# construction: `csharp-sonarqube` (separate skill, not shipped with EasyScanPKG)

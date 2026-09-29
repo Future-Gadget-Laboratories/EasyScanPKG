@@ -57,12 +57,16 @@ def main() -> None:
         print(f"Missing analyzer at {ANALYZE} (fail-open)")
         return
 
-    result = subprocess.run(
-        [sys.executable, str(ANALYZE), path, "--workspace", str(Path(path).parent)],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    try:
+        result = subprocess.run(
+            [sys.executable, str(ANALYZE), path, "--workspace", str(Path(path).parent)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        print(f"Analyzer failed to launch (fail-open): {exc}")
+        return
     if result.stdout:
         print(result.stdout.strip())
     if result.stderr:

@@ -133,7 +133,7 @@ Compute Engine, then prints open issues.
 ```bash
 "$BRIDGE/bin/sonar-issues" --local list
 "$BRIDGE/bin/sonar-issues" --local list --severity CRITICAL,MAJOR --limit 50
-"$BRIDGE/bin/sonar-issues" --local list --json | head
+"$BRIDGE/bin/sonar-issues" --local --json list | head   # --json goes before the subcommand
 ```
 
 ## 5b. Export checklist (agent work queue)

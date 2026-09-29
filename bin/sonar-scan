@@ -28,7 +28,8 @@ Usage: $(basename "$0") [options]
   --project-key KEY           Override project key (default: from context / sonar-local.env)
   --context NAME              Named analysis context (sonar-context)
   --exclusions CSV            Override sonar.exclusions (default hides **/bin/**,**/tests/**,…)
-  --compile-commands PATH     Relative path to compile_commands.json (CFamily Compilation DB mode)
+  --compile-commands PATH     Relative path to compile_commands.json (sonar-cxx on Community;
+                              also passed to commercial CFamily)
 
 Scans with sonarsource/sonar-scanner-cli over Docker --network=host.
 Community Build analyzes Python/JS/Java/… well. Local C/C++ uses the community
@@ -133,8 +134,13 @@ SCANNER_ARGS=(
   -Dsonar.scm.disabled=true
 )
 if [[ -n "$COMPILE_COMMANDS" ]]; then
-  SCANNER_ARGS+=(-Dsonar.cfamily.compile-commands="$COMPILE_COMMANDS")
-  echo "    cfamily compile-commands=$COMPILE_COMMANDS"
+  # sonar-cxx (Community) reads the JSON compilation database; the cfamily key only
+  # matters on commercial editions. Pass both so either analyzer picks it up.
+  SCANNER_ARGS+=(
+    -Dsonar.cxx.jsonCompilationDatabase="$COMPILE_COMMANDS"
+    -Dsonar.cfamily.compile-commands="$COMPILE_COMMANDS"
+  )
+  echo "    compile-commands=$COMPILE_COMMANDS (sonar-cxx + cfamily)"
 fi
 
 docker run --rm --network=host \

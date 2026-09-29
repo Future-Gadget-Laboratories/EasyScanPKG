@@ -119,7 +119,7 @@ while Sonar indexes. Re-query with `./bin/sonar-issues --local list` or
 | Readiness check | `./bin/easyscan-check [--offline] [--require-local]` |
 | Named contexts (multi-project) | `./bin/sonar-context create\|list\|use\|bind` |
 | Create/bind project | `./bin/sonar-project --local create KEY --workspace "$PWD"` |
-| Sonar-only scan | `./bin/sonar-scan --workspace "$PWD" --sources <dirs> [--context NAME]` |
+| Sonar-only scan | `./bin/sonar-scan --workspace "$PWD" --sources <dirs> [--context NAME] [--exclusions CSV] [--compile-commands PATH]` |
 | All-in-one multi-scanner | `./bin/easyscan-scan --workspace "$PWD" [options]` |
 | Preview scanner routing | `./bin/easyscan-scan --workspace "$PWD" --plan` |
 | Install / check scanner tools | `./bin/easyscan-install-scanners` / `--status` |
@@ -406,7 +406,7 @@ by project key + quality profile.
 | Language | Local Community image | Notes |
 | --- | --- | --- |
 | Python, JS/TS, Java, C#, Go, … | Yes | via `sonar-scan` |
-| C / C++ | **Yes via sonar-cxx** | Auto-installed on `sonar-local-up` from [SonarOpenCommunity/sonar-cxx](https://github.com/SonarOpenCommunity/sonar-cxx) (language key `cxx`). Not commercial CFamily/Build Wrapper. Optional external reports: `sonar.cxx.cppcheck.reportPaths`, etc. Disable with `SFT_INSTALL_SONAR_CXX=0`. Also use host tools `cppcheck` / `clang-tidy` via `easyscan-scan`. |
+| C / C++ | **Yes via sonar-cxx** | Auto-installed on `sonar-local-up` from [SonarOpenCommunity/sonar-cxx](https://github.com/SonarOpenCommunity/sonar-cxx) (language key `cxx`). Not commercial CFamily/Build Wrapper. Pass `sonar-scan --compile-commands build/compile_commands.json` for include/define resolution (`sonar.cxx.jsonCompilationDatabase`). Optional external reports: `sonar.cxx.cppcheck.reportPaths`, etc. Disable with `SFT_INSTALL_SONAR_CXX=0`. Also use host tools `cppcheck` / `clang-tidy` via `easyscan-scan`. |
 | Objective-C | No | Needs commercial CFamily |
 | Assembly | No | No first-party analyzer |
 | Julia | No | No official Sonar plugin |
