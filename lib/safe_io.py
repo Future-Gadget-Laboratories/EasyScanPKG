@@ -35,6 +35,7 @@ def check_url(url: str) -> str:
 def urlopen(target: str | urllib.request.Request, *, timeout: float, **kwargs: Any) -> IO[bytes]:
     """``urllib.request.urlopen`` restricted to http(s) URLs."""
     check_url(_url_of(target))
+    # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected
     return urllib.request.urlopen(target, timeout=timeout, **kwargs)  # nosec B310 — scheme checked above
 
 
