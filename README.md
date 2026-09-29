@@ -40,7 +40,7 @@ Daily: click **EasyScan** on the panel, or run `bin/sonar-desktop`.
 | Spin up + open Cursor | `sonar-desktop` / EasyScan icon |
 | Named contexts (multi-project) | `./bin/sonar-context create\|list\|use\|bind` |
 | Create/bind project | `./bin/sonar-project --local create KEY --workspace "$PWD"` |
-| Scan sources | `./bin/sonar-scan --workspace "$PWD" --sources <dirs> [--context NAME]` |
+| Scan sources | `./bin/sonar-scan --workspace "$PWD" --sources <dirs> [--context NAME] [--exclusions CSV] [--compile-commands PATH]` |
 | List / resolve issues | `./bin/sonar-issues --local list` / `resolve ISSUE` |
 | Export issue checklist | `./bin/sonar-issues export --workspace "$PWD" --refresh` |
 | Quality profile XML | `./bin/sonar-profile import FILE.xml --local --bind-project KEY` |
@@ -90,7 +90,7 @@ See [docs/AGENT_SONAR_PLAYBOOK.md](docs/AGENT_SONAR_PLAYBOOK.md) and [docs/FIX_Q
 | Language | Local Community image | Notes |
 | --- | --- | --- |
 | Python, JS/TS, Java, C#, Go, … | Yes | `sonar-scan` |
-| C / C++ | **Yes via sonar-cxx** | Auto-installed on `sonar-local-up` from [SonarOpenCommunity/sonar-cxx](https://github.com/SonarOpenCommunity/sonar-cxx) (language key `cxx`). Not commercial CFamily/Build Wrapper. Optional external reports: `sonar.cxx.cppcheck.reportPaths`, etc. Disable with `SFT_INSTALL_SONAR_CXX=0`. |
+| C / C++ | **Yes via sonar-cxx** | Auto-installed on `sonar-local-up` from [SonarOpenCommunity/sonar-cxx](https://github.com/SonarOpenCommunity/sonar-cxx) (language key `cxx`). Not commercial CFamily/Build Wrapper. Pass `sonar-scan --compile-commands build/compile_commands.json` for include/define resolution (`sonar.cxx.jsonCompilationDatabase`). Optional external reports: `sonar.cxx.cppcheck.reportPaths`, etc. Disable with `SFT_INSTALL_SONAR_CXX=0`. |
 | Objective-C | No | Needs commercial CFamily |
 | Assembly | No | No first-party analyzer |
 | Julia | No | No official Sonar plugin |

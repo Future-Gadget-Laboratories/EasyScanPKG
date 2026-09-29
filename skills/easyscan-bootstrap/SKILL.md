@@ -28,7 +28,7 @@ cd "$BRIDGE"
 chmod +x commission.sh install.sh bin/*
 ./commission.sh --workspace "$PWD" --skip-remote-creds --no-prompt
 "$BRIDGE/bin/install-skills.sh"
-"$BRIDGE/bin/easyscan-check --require-local"
+"$BRIDGE/bin/easyscan-check" --require-local
 ```
 
 ## 1. Start Sonar (local Docker Community)
@@ -85,11 +85,13 @@ curl -s http://127.0.0.1:9000/api/system/status   # expect "UP"
 
 ## Nested Docker / cloud VMs
 
-If containers fail to talk (Postgres timeout) or overlay mount errors:
+If SonarQube's Elasticsearch fails to start, containers can't talk (Postgres
+timeout), or you see overlay mount errors:
 
-- Prefer Docker **vfs** storage or a non-overlay data-root
-- `sysctl -w net.bridge.bridge-nf-call-iptables=0`
-- `sysctl -w vm.max_map_count=524288`
+- `sudo sysctl -w vm.max_map_count=262144` (SonarQube minimum; resets on reboot)
+- Use the `fuse-overlayfs` storage driver with `containerd-snapshotter=false` in
+  `/etc/docker/daemon.json` (the combination tested for nested VMs — see `AGENTS.md`)
+- If containers still can't reach each other: `sudo sysctl -w net.bridge.bridge-nf-call-iptables=0`
 
 ## Next
 

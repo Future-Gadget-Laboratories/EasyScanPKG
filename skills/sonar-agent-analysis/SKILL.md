@@ -14,7 +14,7 @@ description: >-
 1. Local MCP/IDE results are **not** a CI quality-gate pass.
 2. Prefer **remote** connected mode; fall back to **local Docker** server; then standalone IDE.
 3. Reload policy on every session: `sonar-mcp-up --workspace "$PWD"`.
-4. For C#, also follow skill `csharp-sonarqube`.
+4. For C#, also follow skill `csharp-sonarqube` if you have it installed (it is not shipped with EasyScanPKG).
 
 ## Bridge
 

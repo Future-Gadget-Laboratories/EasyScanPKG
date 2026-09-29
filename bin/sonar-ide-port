@@ -7,6 +7,7 @@ import argparse
 import json
 import os
 import sys
+from dataclasses import asdict
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -32,6 +33,11 @@ def main() -> int:
         action="store_true",
         help="Install SonarQube for IDE extension via cursor CLI",
     )
+    parser.add_argument(
+        "--diagnose",
+        action="store_true",
+        help="Report extension/port status and a fix hint without updating the policy DB",
+    )
     args = parser.parse_args()
 
     if args.install:
@@ -41,6 +47,18 @@ def main() -> int:
         else:
             print(message)
         return 0 if ok else 1
+
+    if args.diagnose:
+        diagnosis = diagnose_ide_bridge()
+        if args.json:
+            print(json.dumps(asdict(diagnosis), indent=2))
+        else:
+            print(f"extension_installed: {diagnosis.extension_installed}")
+            print(f"port: {diagnosis.port or '-'}")
+            print(diagnosis.detail)
+            if diagnosis.hint:
+                print(f"hint: {diagnosis.hint}")
+        return 0 if diagnosis.ok else 1
 
     store = resolve_store()
     diagnosis = diagnose_ide_bridge()
