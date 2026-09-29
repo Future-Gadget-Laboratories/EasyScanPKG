@@ -19,6 +19,7 @@ FAVORITES=1
 DESKTOP_SHORTCUT=1
 SKIP_REMOTE_CREDS=0
 SKIP_CHECK=0
+SKIP_SCANNERS=0
 
 # Optional example workspace (set EASYSCAN_EXAMPLE_WS); otherwise $PWD
 DEFAULT_CB=""
@@ -29,7 +30,7 @@ usage() {
 Usage: $(basename "$0") [options]
 
 First-time EasyScanPKG commission (Linux Mint / Ubuntu):
-  1. Install configs, skills, MCP, hooks
+  1. Install configs, skills, MCP, hooks, and easyscan-scan tools (ruff, semgrep, cppcheck, …)
   2. Ensure Docker + optional zenity / docker-compose-v2
   3. Install SonarQube for IDE in Cursor
   4. Start local SonarQube and bootstrap edit tokens
@@ -48,6 +49,7 @@ Options:
   --no-favorites            Do not pin to Cinnamon favorites
   --no-desktop-shortcut     Do not create ~/Desktop shortcut
   --skip-check              Skip final easyscan-check
+  --skip-scanners           Do not install the easyscan-scan tools (ruff, semgrep, …)
   -h, --help                Show help
 
 After commission, click the EasyScan favorites icon to spin up + open Cursor.
@@ -66,6 +68,7 @@ while [[ $# -gt 0 ]]; do
     --no-favorites) FAVORITES=0; shift ;;
     --no-desktop-shortcut) DESKTOP_SHORTCUT=0; shift ;;
     --skip-check) SKIP_CHECK=1; shift ;;
+    --skip-scanners) SKIP_SCANNERS=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Unknown option: $1" >&2; usage; exit 2 ;;
   esac
@@ -96,6 +99,8 @@ INSTALL_ARGS=(--workspace "$WORKSPACE" --project-key "$PROJECT_KEY" --skip-check
 [[ "$NO_PROMPT" -eq 1 ]] && INSTALL_ARGS+=(--no-prompt)
 [[ "$INSTALL_ZENITY" -eq 1 ]] && INSTALL_ARGS+=(--install-zenity)
 [[ "$INSTALL_COMPOSE" -eq 1 ]] && INSTALL_ARGS+=(--install-compose)
+# install.sh also installs the easyscan-scan tools (ruff, semgrep, cppcheck, …).
+[[ "$SKIP_SCANNERS" -eq 1 ]] && INSTALL_ARGS+=(--skip-scanners)
 "$ROOT/install.sh" "${INSTALL_ARGS[@]}"
 
 # Ensure remote URL is set even if token empty

@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import json
 import re
-import shutil
 import subprocess
 from pathlib import Path
 from typing import Any, Mapping
 
+from scanners._util import find_binary
 from scanners.base import Finding
 
 # /path/file.cpp:12:5: warning: message [check-name]
@@ -69,12 +69,13 @@ def parse_clang_tidy_output(text: str, *, workspace: Path | None = None) -> list
 
 def _require_binary(config: Mapping[str, Any]) -> str:
     binary = str(config.get("binary") or "clang-tidy")
-    if not shutil.which(binary) and not Path(binary).is_file():
+    found = find_binary(binary)
+    if not found:
         raise RuntimeError(
             f"clang-tidy binary not found ({binary}). "
-            "Install LLVM clang-tidy or disable the scanner."
+            "Run bin/easyscan-install-scanners or disable the scanner."
         )
-    return binary
+    return found
 
 
 def _resolve_compile_commands(workspace: Path, config: Mapping[str, Any]) -> Path:

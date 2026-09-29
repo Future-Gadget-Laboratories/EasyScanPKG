@@ -8,14 +8,18 @@ import os
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+# "auto": the harness enables the scanner when the project has matching files and
+# the tool is installed. True/False from policy, env, or CLI always wins.
+AUTO = "auto"
+
 DEFAULT_SCANNER_CONFIG: dict[str, dict[str, Any]] = {
     "sonar": {
-        "enabled": True,
+        "enabled": AUTO,
         "run_scan": True,
         "limit": 500,
     },
     "clang-tidy": {
-        "enabled": False,
+        "enabled": AUTO,
         "compile_commands": None,
         "checks": None,
         "config_file": None,
@@ -25,7 +29,7 @@ DEFAULT_SCANNER_CONFIG: dict[str, dict[str, Any]] = {
         "timeout_sec": 600,
     },
     "drmemory": {
-        "enabled": False,
+        "enabled": AUTO,
         "command": None,
         "args": [],
         "cwd": None,
@@ -34,16 +38,16 @@ DEFAULT_SCANNER_CONFIG: dict[str, dict[str, Any]] = {
         "extra_flags": ["-batch", "-brief"],
     },
     "cppcheck": {
-        "enabled": False,
-        "paths": ["."],
+        "enabled": AUTO,
+        "paths": [],
         "std": None,
         "suppressions": None,
         "binary": "cppcheck",
         "timeout_sec": 600,
     },
     "ruff": {
-        "enabled": False,
-        "paths": ["lib", "bin", "hooks"],
+        "enabled": AUTO,
+        "paths": [],
         "select": None,
         "ignore": None,
         "config": None,
@@ -51,27 +55,27 @@ DEFAULT_SCANNER_CONFIG: dict[str, dict[str, Any]] = {
         "timeout_sec": 300,
     },
     "shellcheck": {
-        "enabled": False,
+        "enabled": AUTO,
         "paths": [],
         "binary": "shellcheck",
         "timeout_sec": 300,
     },
     "semgrep": {
-        "enabled": False,
+        "enabled": AUTO,
         "config": "p/default",
         "exclude": [],
         "binary": "semgrep",
         "timeout_sec": 900,
     },
     "bandit": {
-        "enabled": False,
-        "paths": ["lib", "bin"],
+        "enabled": AUTO,
+        "paths": [],
         "skips": None,
         "binary": "bandit",
         "timeout_sec": 300,
     },
     "asan": {
-        "enabled": False,
+        "enabled": AUTO,
         "command": None,
         "args": [],
         "cwd": None,
@@ -79,7 +83,7 @@ DEFAULT_SCANNER_CONFIG: dict[str, dict[str, Any]] = {
         "timeout_sec": 600,
     },
     "ubsan": {
-        "enabled": False,
+        "enabled": AUTO,
         "command": None,
         "args": [],
         "cwd": None,
@@ -87,7 +91,7 @@ DEFAULT_SCANNER_CONFIG: dict[str, dict[str, Any]] = {
         "timeout_sec": 600,
     },
     "valgrind": {
-        "enabled": False,
+        "enabled": AUTO,
         "command": None,
         "args": [],
         "cwd": None,
@@ -95,31 +99,31 @@ DEFAULT_SCANNER_CONFIG: dict[str, dict[str, Any]] = {
         "timeout_sec": 600,
     },
     "gitleaks": {
-        "enabled": False,
+        "enabled": AUTO,
         "no_git": True,
         "binary": "gitleaks",
         "timeout_sec": 600,
     },
     "pip-audit": {
-        "enabled": False,
+        "enabled": AUTO,
         "requirements": None,
         "binary": "pip-audit",
         "timeout_sec": 600,
     },
     "osv": {
-        "enabled": False,
+        "enabled": AUTO,
         "binary": "osv-scanner",
         "timeout_sec": 600,
     },
     "flawfinder": {
-        "enabled": False,
-        "paths": ["."],
+        "enabled": AUTO,
+        "paths": [],
         "minlevel": "1",
         "binary": "flawfinder",
         "timeout_sec": 300,
     },
     "clang-analyzer": {
-        "enabled": False,
+        "enabled": AUTO,
         "report_dir": None,
         "sarif": None,
         "build_command": None,
@@ -127,7 +131,7 @@ DEFAULT_SCANNER_CONFIG: dict[str, dict[str, Any]] = {
         "timeout_sec": 1200,
     },
     "hadolint": {
-        "enabled": False,
+        "enabled": AUTO,
         "paths": [],
         "binary": "hadolint",
         "timeout_sec": 300,
@@ -202,6 +206,29 @@ def load_workspace_scanner_overlay(workspace: Path) -> dict[str, Any]:
     return {}
 
 
+# Scanner block that earlier builds persisted into policy.db as defaults. An
+# untouched copy means "no preference", so it must not pin every tool off.
+_LEGACY_POLICY_SCANNER_DEFAULTS: dict[str, Any] = {
+    "sonar": {"enabled": True},
+    "clang-tidy": {"enabled": False, "compile_commands": None, "checks": None, "config_file": None},
+    "drmemory": {"enabled": False, "command": None, "args": [], "timeout_sec": 600},
+    "cppcheck": {"enabled": False},
+    "ruff": {"enabled": False},
+    "shellcheck": {"enabled": False},
+    "semgrep": {"enabled": False},
+    "bandit": {"enabled": False},
+    "asan": {"enabled": False, "command": None},
+    "ubsan": {"enabled": False, "command": None},
+    "valgrind": {"enabled": False, "command": None},
+    "gitleaks": {"enabled": False},
+    "pip-audit": {"enabled": False},
+    "osv": {"enabled": False},
+    "flawfinder": {"enabled": False},
+    "clang-analyzer": {"enabled": False},
+    "hadolint": {"enabled": False},
+}
+
+
 def load_policy_scanner_overlay(workspace: Path | None = None) -> dict[str, Any]:
     """Best-effort pull of scanners prefs from policy DB + project overlay."""
     try:
@@ -216,7 +243,9 @@ def load_policy_scanner_overlay(workspace: Path | None = None) -> dict[str, Any]
             snap = store.snapshot()
         scan = snap.get("scan") or {}
         scanners = scan.get("scanners")
-        return dict(scanners) if isinstance(scanners, dict) else {}
+        if not isinstance(scanners, dict) or scanners == _LEGACY_POLICY_SCANNER_DEFAULTS:
+            return {}
+        return dict(scanners)
     except Exception:  # noqa: BLE001 — policy is optional for scan config
         return {}
 
@@ -384,8 +413,10 @@ def resolve_scanner_config(
 
 
 def enabled_scanner_names(config: Mapping[str, Mapping[str, Any]]) -> list[str]:
-    return [name for name, cfg in config.items() if cfg.get("enabled")]
+    return [name for name, cfg in config.items() if cfg.get("enabled") is True]
 
 
 def skipped_scanner_reasons(config: Mapping[str, Mapping[str, Any]]) -> dict[str, str]:
-    return {name: "disabled" for name, cfg in config.items() if not cfg.get("enabled")}
+    return {
+        name: "disabled" for name, cfg in config.items() if cfg.get("enabled") is not True
+    }

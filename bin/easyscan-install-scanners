@@ -1,0 +1,126 @@
+#!/usr/bin/env python3
+"""Install the host tools behind easyscan-scan (default: every standard scanner).
+
+Tools land in ~/.config/sft/scanners/bin (distro packages go to /usr/bin), which
+easyscan-scan searches automatically. Already-installed tools are left alone.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from dataclasses import asdict
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _bootstrap import bootstrap
+
+bootstrap()
+
+from scanner_install import (  # noqa: E402
+    CATALOG,
+    Runner,
+    builtin_notes,
+    format_results,
+    install_tools,
+    select_tools,
+    status,
+)
+from scanners._util import tools_home  # noqa: E402
+
+
+def _csv(raw: str | None) -> list[str]:
+    return [part.strip() for part in (raw or "").split(",") if part.strip()]
+
+
+# Tools worth installing for any C/C++ project even before a compile database,
+# build command, or run target exists (those are only needed at scan time).
+_C_FAMILY_TOOLS = {"clang-tidy", "clang-analyzer", "valgrind", "drmemory"}
+
+
+def _workspace_tools(workspace: Path) -> list[str]:
+    """Scanner ids that apply to the files in the workspace."""
+    from scanners import detect_project
+    from scanners.routing import _route
+
+    profile = detect_project(workspace)
+    names = [t.name for t in CATALOG]
+    return [
+        n
+        for n in names
+        if (n in _C_FAMILY_TOOLS and profile.has_c_family) or _route(n, {}, profile).applicable
+    ]
+
+
+def main(argv: list[str] | None = None) -> int:
+    catalog_help = ", ".join(f"{t.name}{'' if t.default else ' (opt-in)'}" for t in CATALOG)
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--status", action="store_true", help="Show what is installed and exit")
+    parser.add_argument("--only", help=f"Comma list of tools to install. Known: {catalog_help}")
+    parser.add_argument("--skip", help="Comma list of tools to leave out")
+    parser.add_argument("--with", dest="with_optional", help="Also install opt-in tools (e.g. drmemory)")
+    parser.add_argument(
+        "--workspace",
+        help="Only install tools that apply to the files in this project",
+    )
+    parser.add_argument("--no-system", action="store_true", help="Never use apt-get/dnf (no sudo)")
+    parser.add_argument("--no-pip", action="store_true", help="Never use the pip virtualenv")
+    parser.add_argument("--no-download", action="store_true", help="Never download GitHub release binaries")
+    parser.add_argument(
+        "--allow-unverified",
+        action="store_true",
+        help="Install GitHub binaries even when the release publishes no SHA-256",
+    )
+    parser.add_argument("--non-interactive", action="store_true", help="Use sudo -n (never prompt)")
+    parser.add_argument("--dry-run", action="store_true", help="Print the install steps without running them")
+    parser.add_argument("--json", action="store_true")
+    args = parser.parse_args(argv)
+
+    try:
+        tools = select_tools(
+            only=_csv(args.only) or None,
+            skip=_csv(args.skip) or None,
+            with_optional=_csv(args.with_optional) or None,
+        )
+    except ValueError as exc:
+        parser.error(str(exc))
+    if args.workspace:
+        relevant = set(_workspace_tools(Path(args.workspace).resolve()))
+        tools = [t for t in tools if t.name in relevant or t.name in _csv(args.only)]
+
+    if args.status:
+        results = status(tools if (args.only or args.skip or args.workspace) else None)
+        if args.json:
+            print(json.dumps({"tools": [asdict(r) for r in results], "builtin": builtin_notes()}, indent=2))
+        else:
+            print(f"Scanner tools (bin dir: {tools_home() / 'bin'})")
+            print(format_results(results))
+            width = max((len(r.name) for r in results), default=8)
+            for name, note in builtin_notes().items():
+                print(f"  {name.ljust(width)}  builtin   {note}")
+        return 0 if all(r.status == "present" for r in results) else 1
+
+    log = (lambda _msg: None) if args.json else print
+    runner = Runner(dry_run=args.dry_run, interactive=not args.non_interactive, log=log)
+    results = install_tools(
+        tools,
+        runner=runner,
+        use_system=not args.no_system,
+        use_pip=not args.no_pip,
+        use_github=not args.no_download,
+        allow_unverified=args.allow_unverified,
+    )
+    if args.json:
+        print(json.dumps({"tools": [asdict(r) for r in results]}, indent=2))
+    else:
+        print("\nScanner tools:")
+        print(format_results(results))
+        failed = [r.name for r in results if r.status == "failed"]
+        if failed:
+            print(f"\nNot installed: {', '.join(failed)} — easyscan-scan will skip them.")
+    return 1 if any(r.status == "failed" for r in results) else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

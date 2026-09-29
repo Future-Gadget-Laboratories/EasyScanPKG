@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 from typing import Any, Mapping
 
-from scanners._util import relativize, require_binary, run_command
+from scanners._util import ensure_exit, relativize, require_binary, run_command
 from scanners.base import Finding
 
 _SEV = {
@@ -110,5 +110,5 @@ class ShellCheckScanner:
             return []
         cmd = [binary, "-f", "json", *[str(p) for p in scripts]]
         timeout = int(config.get("timeout_sec") or 300)
-        proc = run_command(cmd, cwd=workspace, timeout_sec=timeout)
+        proc = ensure_exit(run_command(cmd, cwd=workspace, timeout_sec=timeout), "shellcheck")
         return parse_shellcheck_json(proc.stdout or "", workspace=workspace)

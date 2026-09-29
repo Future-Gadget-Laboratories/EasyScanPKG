@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 from typing import Any, Mapping
 
-from scanners._util import relativize, require_binary, resolve_paths, run_command
+from scanners._util import ensure_exit, relativize, require_binary, resolve_paths, run_command
 from scanners.base import Finding
 
 # Ruff uses letter prefixes; treat security-ish codes as MAJOR, else MINOR/MAJOR by default.
@@ -65,7 +65,7 @@ class RuffScanner:
         _ = context
         workspace = workspace.resolve()
         binary = require_binary("ruff", config=config)
-        paths = resolve_paths(workspace, config, default=["lib", "bin", "hooks"])
+        paths = resolve_paths(workspace, config, default=["."])
         # Keep only paths that exist to avoid ruff hard-failing on missing dirs.
         existing = [p for p in paths if Path(p).exists()]
         if not existing:
@@ -81,5 +81,5 @@ class RuffScanner:
         if cfg:
             cmd.extend(["--config", str(cfg)])
         timeout = int(config.get("timeout_sec") or 300)
-        proc = run_command(cmd, cwd=workspace, timeout_sec=timeout)
+        proc = ensure_exit(run_command(cmd, cwd=workspace, timeout_sec=timeout), "ruff")
         return parse_ruff_json(proc.stdout or "", workspace=workspace)

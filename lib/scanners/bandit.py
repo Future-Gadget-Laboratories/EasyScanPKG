@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 from typing import Any, Mapping
 
-from scanners._util import relativize, require_binary, resolve_paths, run_command
+from scanners._util import ensure_exit, relativize, require_binary, resolve_paths, run_command
 from scanners.base import Finding
 
 _SEV = {
@@ -60,7 +60,7 @@ class BanditScanner:
         _ = context
         workspace = workspace.resolve()
         binary = require_binary("bandit", config=config)
-        paths = resolve_paths(workspace, config, default=["lib", "bin"])
+        paths = resolve_paths(workspace, config, default=["."])
         existing = [p for p in paths if Path(p).exists()]
         if not existing:
             existing = [str(workspace)]
@@ -69,6 +69,6 @@ class BanditScanner:
         if skips:
             cmd.extend(["-s", str(skips) if not isinstance(skips, list) else ",".join(skips)])
         timeout = int(config.get("timeout_sec") or 300)
-        proc = run_command(cmd, cwd=workspace, timeout_sec=timeout)
+        proc = ensure_exit(run_command(cmd, cwd=workspace, timeout_sec=timeout), "bandit")
         # Bandit may write JSON to stdout even on findings (exit 1)
         return parse_bandit_json(proc.stdout or "", workspace=workspace)

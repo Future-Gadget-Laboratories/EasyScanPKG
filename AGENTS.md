@@ -73,15 +73,23 @@ Standard dev commands are documented in `README.md` and `CONTRIBUTING.md`:
   server indexing delay even when the analysis succeeded — re-query with
   `sonar-issues list` to see the real results.
 
-- **Multi-scanner stage:** `./bin/easyscan-scan --workspace <PROJECT> --sources <dirs>
-  --project-key <key>` runs enabled scanners and merges into the same checklist.
-  Defaults: Sonar on; all other tools off (`cppcheck`, `ruff`, `shellcheck`,
-  `semgrep`, `bandit`, `asan`/`ubsan`, `valgrind`, `drmemory`, `gitleaks`,
-  `pip-audit`/`osv`, `flawfinder`, `clang-analyzer`, `hadolint`, `clang-tidy`).
-  Enable with `--enable <name>` (or `EASYSCAN_ENABLE_*` / `EASYSCAN_SCANNERS` /
-  `.sft/sonar-policy.json` → `scan.scanners`). Run adapters (`asan`, `ubsan`,
-  `valgrind`, `drmemory`) need `--*-command -- <argv>`. All of these are **host
-  binaries** in v1 (not Dockerized); see README “Scanner catalog”.
+- **Multi-scanner stage:** `./bin/easyscan-scan --workspace <PROJECT>` detects
+  the project's file types and runs every installed scanner that applies (auto
+  mode), each on only its own files, then merges into the same checklist. Preview
+  with `--plan`; `--mode manual` restores "Sonar only unless `--enable`".
+  Explicit `--enable`/`--disable`, `EASYSCAN_ENABLE_*`, `EASYSCAN_SCANNERS`, or
+  `.sft/sonar-policy.json` → `scan.scanners` always beat auto. Dynamic adapters
+  (`asan`, `ubsan`, `valgrind`, `drmemory`) only run with `--*-command -- <argv>`.
+  Use `--fail-on-error` in CI so a crashed tool is not mistaken for a clean scan.
+
+- **Scanner tools** are host binaries installed by
+  `./bin/easyscan-install-scanners` (apt → isolated pip venv → SHA-256-verified
+  GitHub release). `install.sh`/`commission.sh` run it unless `--skip-scanners`.
+  Non-distro tools land in `~/.config/sft/scanners/bin`, which the scanners search
+  automatically. Check with `--status`. In this cloud VM apt and PyPI work, but
+  GitHub release downloads and `semgrep.dev` are blocked by the egress policy, so
+  `osv-scanner` will not install and semgrep's registry rules (`p/default`) fail —
+  expected here, not a bug; CI (`scanner-harness` job) exercises both.
 
 - Config/state lives under `~/.config/sft/` (not in the repo) and is not
   committed. Secret files (`sonar.env`, `sonar-local.env`,

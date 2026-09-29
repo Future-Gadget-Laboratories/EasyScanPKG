@@ -19,3 +19,33 @@ jobs:
         run: |
           chmod +x bin/* commission.sh install.sh
           ./bin/easyscan-check --offline --skip-tests
+
+  scanner-harness:
+    # Installs every default scanner tool and runs the auto-routed scan on this
+    # repo (dogfood). Findings never fail the job; a crashed scanner does.
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install scanner tools
+        env:
+          GITHUB_TOKEN: ${{ github.token }}  # avoids GitHub API rate limits for release downloads
+        run: |
+          chmod +x bin/* commission.sh install.sh
+          ./bin/easyscan-install-scanners --non-interactive
+          ./bin/easyscan-install-scanners --status
+      - name: Scan plan
+        run: ./bin/easyscan-scan --workspace "$PWD" --plan
+      - name: Multi-scanner scan (auto mode)
+        run: ./bin/easyscan-scan --workspace "$PWD" --fail-on-error
+      - name: Upload issue checklist
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: easyscan-issue-checklist
+          path: .sft/issue-checklist.*
+          if-no-files-found: ignore

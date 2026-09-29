@@ -4,13 +4,16 @@ Bash + Python (stdlib-only) toolkit that wires a local or remote **SonarQube**
 server into **Cursor** / **Codex**: Docker Community stack, token bootstrap,
 SonarScanner CLI, MCP helpers, and an agent-ingestible issue checklist.
 
-The all-in-one stage `easyscan-scan` can also run optional **host** analyzers
-(cppcheck, ruff, shellcheck, semgrep, bandit, sanitizers, valgrind, gitleaks,
-dependency scanners, and more) and merge every finding into one checklist.
+The all-in-one stage `easyscan-scan` also runs **host** analyzers (ruff, bandit,
+semgrep, shellcheck, cppcheck, clang-tidy, flawfinder, hadolint, gitleaks,
+pip-audit, osv-scanner, sanitizers, valgrind, …). It detects what the project
+contains, sends each kind of file to every installed tool that understands it,
+and merges every finding into one checklist.
 
 > Requires Docker for the Sonar path. Pulls official Sonar Community / scanner
 > images at runtime — this repo does **not** redistribute Sonar binaries.
-> Extra scanners are opt-in host binaries (not bundled).
+> Scanner tools are installed on the host by `bin/easyscan-install-scanners`
+> (run automatically by `install.sh` / `commission.sh`), never bundled.
 
 ## Contents
 
@@ -19,6 +22,7 @@ dependency scanners, and more) and merge every finding into one checklist.
 - [Core workflow](#core-workflow)
 - [Command reference](#command-reference)
 - [Multi-scanner stage (`easyscan-scan`)](#multi-scanner-stage-easyscan-scan)
+- [Installing scanner tools](#installing-scanner-tools)
 - [Scanner catalog](#scanner-catalog)
 - [Controls (CLI, env, policy)](#controls-cli-env-policy)
 - [Issue checklist](#issue-checklist-done-when-empty)
@@ -46,6 +50,7 @@ Useful `commission.sh` flags:
 | `--skip-remote-creds` | Local Docker only |
 | `--no-favorites` | Skip Cinnamon favorites pin |
 | `--skip-check` | Skip final `easyscan-check` |
+| `--skip-scanners` | Do not install the `easyscan-scan` tools (see [Installing scanner tools](#installing-scanner-tools)) |
 
 Daily: click **EasyScan** on the panel, or run `bin/sonar-desktop`.
 
@@ -93,10 +98,9 @@ C/C++ (`cxx` language key). Disable with `SFT_INSTALL_SONAR_CXX=0`.
 ./bin/sonar-scan --workspace "$PWD" --sources src,lib --project-key local-demo
 ./bin/sonar-issues --local export --workspace "$PWD" --project-key local-demo --refresh
 
-# 3b) Or all-in-one multi-scanner (Sonar on; other tools opt-in)
-./bin/easyscan-scan --workspace "$PWD" --project-key local-demo \
-  --sources src,lib \
-  --enable ruff --enable shellcheck --enable cppcheck
+# 3b) Or all-in-one multi-scanner: every installed tool that fits the project
+./bin/easyscan-scan --workspace "$PWD" --plan          # preview the routing
+./bin/easyscan-scan --workspace "$PWD" --project-key local-demo --sources src,lib
 
 # 4) Fix until the checklist is empty, then re-run
 #    → .sft/issue-checklist.md (+ .json)
@@ -117,6 +121,8 @@ while Sonar indexes. Re-query with `./bin/sonar-issues --local list` or
 | Create/bind project | `./bin/sonar-project --local create KEY --workspace "$PWD"` |
 | Sonar-only scan | `./bin/sonar-scan --workspace "$PWD" --sources <dirs> [--context NAME]` |
 | All-in-one multi-scanner | `./bin/easyscan-scan --workspace "$PWD" [options]` |
+| Preview scanner routing | `./bin/easyscan-scan --workspace "$PWD" --plan` |
+| Install / check scanner tools | `./bin/easyscan-install-scanners` / `--status` |
 | List registered scanners | `./bin/easyscan-scan --list-scanners` |
 | List / resolve issues | `./bin/sonar-issues --local list` / `resolve ISSUE` |
 | Export issue checklist | `./bin/sonar-issues export --workspace "$PWD" --refresh` |
@@ -128,11 +134,51 @@ while Sonar indexes. Re-query with `./bin/sonar-issues --local list` or
 
 ## Multi-scanner stage (`easyscan-scan`)
 
-`easyscan-scan` runs every **enabled** scanner, merges findings, and writes the
-unified checklist (schema `easyscan.issue-checklist/v2`). Each issue is tagged
-with `source` (`sonar`, `ruff`, `cppcheck`, …).
+`easyscan-scan` is the scan harness. For every run it:
 
-**Defaults:** Sonar **on**; every other scanner **off**.
+1. **Detects** what the workspace contains (Python incl. extensionless
+   `#!/usr/bin/env python` scripts, shell, C/C++, Dockerfiles, requirements
+   files, lockfiles, `compile_commands.json`, other languages), skipping
+   `.git`, virtualenvs, `node_modules`, caches, `dist`, and `.sft`.
+2. **Routes** each file type to the scanners that understand it — ruff gets the
+   Python roots, shellcheck gets the shell scripts, cppcheck/flawfinder get the
+   C/C++ roots, hadolint gets the Dockerfiles, pip-audit gets `requirements.txt`,
+   and so on. Bandit skips test code (assert / `/tmp` noise).
+3. **Runs** every scanner that applies *and* is installed (**auto mode**, the
+   default), then merges findings into the unified checklist
+   (schema `easyscan.issue-checklist/v2`). Each issue carries its `source`.
+
+Scanners that are skipped are listed with the reason (`no C/C++ files`,
+`not installed — run bin/easyscan-install-scanners`, `sonar server not ready`,
+…) both in the scan plan and in the checklist's `sources_skipped`. A scanner
+that crashes (bad config, network failure) is reported as `error: …` — never
+as a clean run.
+
+```bash
+./bin/easyscan-scan --workspace "$PWD" --plan
+```
+
+```text
+Scan plan — /work/app (languages: cpp, dockerfile, python)
+  [RUN ] ruff            auto      12 Python files → app, tools/deploy
+  [RUN ] cppcheck        auto      4 C/C++ files → native
+  [RUN ] clang-tidy      auto      compile database build/compile_commands.json
+  [RUN ] hadolint        auto      1 Dockerfile → Dockerfile
+  [RUN ] pip-audit       auto      auditing requirements.txt
+  [skip] shellcheck      auto      no shell scripts
+  [skip] osv             auto      not installed — run bin/easyscan-install-scanners (osv-scanner)
+  [skip] valgrind        auto      dynamic analysis needs a run command (--valgrind-command -- ./binary)
+  …
+```
+
+**What auto mode will not guess:** dynamic tools (`asan`, `ubsan`, `valgrind`,
+`drmemory`) need a program to run, `clang-analyzer` needs a build command or an
+existing report, and `clang-tidy` needs a `compile_commands.json` (found
+automatically in the root, `build/`, `out/`, or `build*/`). Sonar runs when
+Docker is present and the configured server accepts the token.
+
+`--mode manual` (or `EASYSCAN_MODE=manual`) restores the old behaviour: Sonar
+only, every other tool opt-in via `--enable`.
 
 ### CLI options
 
@@ -143,14 +189,17 @@ with `source` (`sonar`, `ruff`, `cppcheck`, …).
 | Option | Meaning |
 | --- | --- |
 | `--workspace PATH` | Project root (default: cwd) |
+| `--mode auto\|manual` | `auto` (default): every installed, applicable tool. `manual`: Sonar + explicit `--enable` only |
+| `--plan` | Print which scanners would run on which files, then exit (add `--json` for machine output) |
+| `--fail-on-error` | Exit 2 if a selected scanner crashed (findings never fail the run) — use in CI |
 | `--project-key KEY` | Sonar project key |
 | `--context NAME` | Named analysis context (`sonar-context`) |
 | `--local` | Prefer local Sonar credentials |
 | `--sources CSV` | Sonar sources (passed through to `sonar-scan`) |
 | `--exclusions CSV` | Sonar exclusions CSV |
-| `--compile-commands PATH` | `compile_commands.json` for clang-tidy / optional CFamily |
-| `--enable NAME` | Enable a scanner (repeatable) |
-| `--disable NAME` | Disable a scanner (repeatable) |
+| `--compile-commands PATH` | `compile_commands.json` for clang-tidy / Sonar (overrides auto-detection) |
+| `--enable NAME` | Force a scanner on (repeatable) |
+| `--disable NAME` | Force a scanner off (repeatable) |
 | `--scanners a,b,c` | Run **only** these scanners (exclusive list) |
 | `--list-scanners` | Print registered names and exit |
 | `--drmemory-command -- …` | Target argv for Dr. Memory (after `--`) |
@@ -169,134 +218,131 @@ with `source` (`sonar`, `ruff`, `cppcheck`, …).
 ### Examples
 
 ```bash
-# List every registered scanner name
-./bin/easyscan-scan --list-scanners
+# Everything that applies (default)
+./bin/easyscan-scan --workspace "$PWD"
 
-# Sonar + Python/Bash/C++ static tools
-./bin/easyscan-scan --workspace "$PWD" --project-key local-demo \
-  --sources lib,bin,hooks \
-  --enable ruff --enable shellcheck --enable cppcheck --enable bandit
+# Same, but never touch Sonar and fail CI if a tool breaks
+./bin/easyscan-scan --workspace "$PWD" --disable sonar --fail-on-error
 
-# C++ tidy + cppcheck with a compilation database
-./bin/easyscan-scan --workspace "$PWD" --project-key local-demo \
-  --enable clang-tidy --compile-commands build/compile_commands.json \
-  --enable cppcheck --enable flawfinder
-
-# Dynamic memory (pick one style per project)
-./bin/easyscan-scan --workspace "$PWD" --disable sonar \
-  --enable asan --asan-command -- ./build/tests_asan
-./bin/easyscan-scan --workspace "$PWD" --disable sonar \
-  --enable valgrind --valgrind-command -- ./build/tests
-./bin/easyscan-scan --workspace "$PWD" --disable sonar \
-  --enable drmemory --drmemory-command -- ./build/tests
-
-# Secrets + dependency CVEs only
+# Only secrets + dependency CVEs
 ./bin/easyscan-scan --workspace "$PWD" --scanners gitleaks,pip-audit,osv
 
-# Dockerfile + Semgrep AppSec rules
-./bin/easyscan-scan --workspace "$PWD" --enable hadolint --enable semgrep
+# Add a dynamic memory check to the auto set (pick one style per project)
+./bin/easyscan-scan --workspace "$PWD" --asan-command -- ./build/tests_asan
+./bin/easyscan-scan --workspace "$PWD" --valgrind-command -- ./build/tests
+
+# clang-analyzer with a build command lives in policy (see below)
 ```
+
+## Installing scanner tools
+
+`install.sh` and `commission.sh` run `bin/easyscan-install-scanners` by default
+(`--skip-scanners` opts out). Run it yourself any time:
+
+```bash
+./bin/easyscan-install-scanners --status          # what is installed, where
+./bin/easyscan-install-scanners                   # install every default tool
+./bin/easyscan-install-scanners --workspace "$PWD" # only tools this project needs
+./bin/easyscan-install-scanners --with drmemory   # add opt-in tools
+./bin/easyscan-install-scanners --dry-run         # print the steps only
+```
+
+Each tool is tried through an ordered list of methods; the first that works wins:
+
+| Method | Used for | Notes |
+| --- | --- | --- |
+| `apt-get` / `dnf` | shellcheck, cppcheck, flawfinder, clang-tidy, clang-tools (scan-build), valgrind, gitleaks | Needs root or sudo; `--non-interactive` uses `sudo -n`; `--no-system` skips it |
+| pip (isolated venv) | ruff, bandit, semgrep, pip-audit, hadolint (`hadolint-bin`), shellcheck / flawfinder fallback | `~/.config/sft/scanners/venv`; creates `python3-venv` via apt if missing; `--no-pip` skips it |
+| GitHub release | osv-scanner, gitleaks / hadolint fallback, drmemory | Linux x86_64/arm64; **SHA-256 verified** (release digest or checksum file) before install; `--no-download` skips it |
+
+Everything that is not a distro package is linked into
+`~/.config/sft/scanners/bin` (override the root with `EASYSCAN_TOOLS_HOME`).
+`easyscan-scan` searches that directory as well as `PATH`, so no shell profile
+changes are needed. Tools already on `PATH` are left alone. `asan`/`ubsan` use
+your compiler (gcc or clang) and Sonar uses Docker, so neither is installed here.
+Set `GITHUB_TOKEN` to avoid GitHub API rate limits on shared machines/CI.
 
 ## Scanner catalog
 
-Install the host binary (or set `binary` in policy), then enable the scanner.
-None of these tools are Dockerized in v1 (except Sonar’s own scanner image).
-
-| Name | Role | Host binary | How to use |
+| Name | Role | Auto-runs when | Installed via |
 | --- | --- | --- | --- |
-| `sonar` | SonarQube analysis + issue export | Docker `sonar-scanner-cli` via `sonar-scan` | On by default. Needs local/remote server + token. |
-| `clang-tidy` | C/C++ clang-tidy checks | `clang-tidy` | `--enable clang-tidy --compile-commands build/compile_commands.json` |
-| `cppcheck` | C/C++ static analysis (XML) | `cppcheck` | `--enable cppcheck` — optional policy `paths`, `std`, `suppressions` |
-| `ruff` | Python lint / readability | `ruff` | `--enable ruff` — default paths `lib`, `bin`, `hooks`; policy `select` / `ignore` / `config` |
-| `shellcheck` | Shell script lint | `shellcheck` | `--enable shellcheck` — discovers `*.sh` under `bin`/`hooks`/`scripts` when `paths` empty |
-| `semgrep` | Polyglot SAST | `semgrep` | `--enable semgrep` — default config `p/default`; override with policy/`EASYSCAN_SEMGREP_CONFIG` |
-| `bandit` | Python security | `bandit` | `--enable bandit` — recursive JSON report; policy `paths`, `skips` |
-| `asan` | AddressSanitizer run adapter | instrumented binary | `--enable asan --asan-command -- ./bin_asan` (build with `-fsanitize=address` first) |
-| `ubsan` | UndefinedBehaviorSanitizer run adapter | instrumented binary | `--enable ubsan --ubsan-command -- ./bin_ubsan` |
-| `valgrind` | Memcheck (Linux) | `valgrind` | `--enable valgrind --valgrind-command -- ./tests` |
-| `drmemory` | Dynamic memory (Dr. Memory) | `drmemory` | `--enable drmemory --drmemory-command -- ./tests` |
-| `gitleaks` | Secrets detection | `gitleaks` | `--enable gitleaks` — default filesystem `--no-git` scan for checklist line numbers |
-| `pip-audit` | Python dependency CVEs | `pip-audit` | `--enable pip-audit` — optional policy `requirements` |
-| `osv` | OSV lockfile/manifest CVEs | `osv-scanner` | `--enable osv` |
-| `flawfinder` | C/C++ insecure-API heuristics | `flawfinder` | `--enable flawfinder` — policy `minlevel` (noisy; keep off unless wanted) |
-| `clang-analyzer` | Clang Static Analyzer | `scan-build` | `--enable clang-analyzer` — policy `report_dir`, `sarif`, or `build_command` |
-| `hadolint` | Dockerfile lint | `hadolint` | `--enable hadolint` — discovers `Dockerfile*` when `paths` empty |
-
-### Install hints (host packages)
-
-Exact package names vary by distro; examples on Debian/Ubuntu-ish systems:
-
-```bash
-# Static / lint
-sudo apt-get install -y cppcheck shellcheck clang-tidy clang-tools valgrind
-pipx install ruff bandit semgrep pip-audit   # or: pip install --user …
-
-# Secrets / deps / Dockerfiles / C heuristics
-# gitleaks, osv-scanner, hadolint, flawfinder — install from upstream releases
-# or your distro packages when available
-```
+| `sonar` | SonarQube analysis + issue export | Code found + Docker + server accepts token | Docker (`sonar-local-up`) |
+| `ruff` | Python lint | Python files | pip |
+| `bandit` | Python security | Non-test Python files | pip |
+| `semgrep` | Polyglot SAST | Any code (needs semgrep.dev for registry rules like `p/default`) | pip |
+| `shellcheck` | Shell lint | `*.sh` or `#!/bin/bash`-style scripts | apt → pip |
+| `cppcheck` | C/C++ static analysis | C/C++ files | apt |
+| `flawfinder` | C/C++ risky-API heuristics | C/C++ files | apt → pip |
+| `clang-tidy` | C/C++ clang-tidy | C/C++ files + `compile_commands.json` | apt |
+| `clang-analyzer` | Clang Static Analyzer | C/C++ + `build_command` / `report_dir` / `sarif` in policy | apt (`clang-tools`) |
+| `hadolint` | Dockerfile lint | `Dockerfile*` / `Containerfile` | pip → GitHub |
+| `gitleaks` | Secrets detection | Always (filesystem scan) | apt → GitHub |
+| `pip-audit` | Python dependency CVEs | `requirements*.txt` | pip |
+| `osv` | Lockfile / manifest CVEs | Lockfiles (`poetry.lock`, `package-lock.json`, `go.mod`, `Cargo.lock`, …) | GitHub |
+| `asan` / `ubsan` | Sanitizer run adapters | `--asan-command` / `--ubsan-command` given | compiler |
+| `valgrind` | Memcheck (Linux) | `--valgrind-command` given | apt |
+| `drmemory` | Dr. Memory | `--drmemory-command` given | GitHub (opt-in: `--with drmemory`) |
 
 ### Overlap guidance
 
 - **Dynamic memory:** prefer **one** of `asan`, `valgrind`, or `drmemory` per project.
-- **C/C++ static:** `clang-tidy`, `cppcheck`, `flawfinder`, and `clang-analyzer` overlap; start with tidy + cppcheck.
-- **Python:** `ruff` (style) + `bandit` or `semgrep` (security) pair well; Sonar still covers much of the quality surface.
+- **C/C++ static:** `clang-tidy`, `cppcheck`, `flawfinder`, and `clang-analyzer`
+  overlap. `flawfinder` is noisy; disable it in policy if it drowns out the rest.
+- **Python:** `ruff` (style) + `bandit`/`semgrep` (security); Sonar still covers
+  much of the quality surface.
 
 ## Controls (CLI, env, policy)
 
-Precedence when resolving scanner config (later wins):
+Every scanner starts as `"enabled": "auto"`. Any explicit `true`/`false` wins
+over auto, with this precedence (later wins):
 
-1. Built-in defaults (Sonar on; others off)
-2. Policy DB / project overlay
+1. Built-in defaults (`auto` for every scanner)
+2. Policy DB (`sonar-policy set scan scanners …`) / project overlay
 3. Workspace file: `.sft/sonar-policy.json` or `.sft/scan-policy.json`
 4. Environment variables
 5. CLI (`--enable` / `--disable` / `--scanners` / command flags)
+
+A scanner forced on still gets auto-routed paths unless you set `paths`.
 
 ### Environment variables
 
 | Variable | Effect |
 | --- | --- |
+| `EASYSCAN_MODE` | `auto` (default) or `manual` |
 | `EASYSCAN_SCANNERS` | Comma list → exclusive enable set (like `--scanners`) |
 | `EASYSCAN_ENABLE_<NAME>` | `1`/`true`/`on` or `0`/`false`/`off` per scanner |
+| `EASYSCAN_EXCLUDE_DIRS` | Extra directory names the harness never routes (e.g. `vendor,third_party`) |
+| `EASYSCAN_TOOLS_HOME` | Root for installed tools (default `~/.config/sft/scanners`) |
 | `EASYSCAN_COMPILE_COMMANDS` | Path to `compile_commands.json` |
 | `EASYSCAN_DRMEMORY_COMMAND` | Dr. Memory target command string |
 | `EASYSCAN_ASAN_COMMAND` | ASan target command string |
 | `EASYSCAN_UBSAN_COMMAND` | UBSan target command string |
 | `EASYSCAN_VALGRIND_COMMAND` | Valgrind target command string |
-| `EASYSCAN_SEMGREP_CONFIG` | Semgrep `--config` value (e.g. `p/owasp-top-ten`) |
+| `EASYSCAN_SEMGREP_CONFIG` | Semgrep `--config` value (e.g. `p/owasp-top-ten` or a local rules dir) |
 
-Enable-flag examples (names map to scanner ids with `-` → `_`, uppercased):
+Enable-flag names map to scanner ids with `-` → `_`, uppercased:
 
 ```bash
-export EASYSCAN_ENABLE_RUFF=1
-export EASYSCAN_ENABLE_SHELLCHECK=1
-export EASYSCAN_ENABLE_CPPCHECK=1
-export EASYSCAN_ENABLE_GITLEAKS=1
-export EASYSCAN_ENABLE_PIP_AUDIT=1
-# exclusive set:
-export EASYSCAN_SCANNERS=sonar,ruff,shellcheck
-./bin/easyscan-scan --workspace "$PWD" --project-key local-demo
+export EASYSCAN_ENABLE_FLAWFINDER=0        # opt one tool out of auto
+export EASYSCAN_SCANNERS=sonar,ruff,shellcheck   # exclusive set
+./bin/easyscan-scan --workspace "$PWD"
 ```
 
 ### Workspace policy overlay
 
-Copy and edit `templates/project.sonar-policy.json` → `.sft/sonar-policy.json`:
+Copy and edit `templates/project.sonar-policy.json` → `.sft/sonar-policy.json`.
+Only list what you want to change; everything else stays `auto`:
 
 ```json
 {
   "scan": {
     "scanners": {
-      "sonar": { "enabled": true },
-      "ruff": { "enabled": true, "paths": ["lib", "bin", "hooks"] },
-      "shellcheck": { "enabled": true },
-      "cppcheck": { "enabled": false, "std": "c++17" },
-      "semgrep": { "enabled": false, "config": "p/default" },
-      "clang-tidy": {
-        "enabled": false,
-        "compile_commands": "build/compile_commands.json"
-      },
-      "asan": { "enabled": false, "command": ["./build/tests_asan"] },
-      "gitleaks": { "enabled": false, "no_git": true }
+      "semgrep": { "config": "p/owasp-top-ten" },
+      "clang-tidy": { "compile_commands": "cmake-out/compile_commands.json" },
+      "clang-analyzer": { "build_command": ["make", "-C", "build"] },
+      "cppcheck": { "std": "c++17" },
+      "flawfinder": { "enabled": false },
+      "ruff": { "enabled": true, "paths": ["src"] }
     }
   }
 }
@@ -368,6 +414,7 @@ by project key + quality profile.
 | `~/.config/sft/sonar-local-admin.json` | Generated local admin password |
 | `~/.config/sft/sonar-policy/policy.db` | Policy + named contexts (no tokens) |
 | `~/.config/sft/plugins/` | Cached plugin JARs (e.g. sonar-cxx) |
+| `~/.config/sft/scanners/` | Scanner tools from `easyscan-install-scanners` (`bin/`, `venv/`) |
 | `~/.config/sft/desktop.env` | Workspace for EasyScan launcher |
 | `~/.config/sft/bridge.env` | `BRIDGE` / `SFT_AGENT_BRIDGE` path |
 | `<repo>/.sft/issue-checklist.md` | Agent-ingestible open-issue checklist |

@@ -14,8 +14,8 @@
    ```bash
    "$BRIDGE/bin/easyscan-scan" --workspace "$PWD" --local \
      --project-key local-easyscanpkg --sources lib,bin,hooks
-   # Opt-in: --enable clang-tidy --compile-commands build/compile_commands.json
-   # Opt-in: --enable drmemory --drmemory-command -- ./build/tests
+   # Auto mode: every installed scanner that fits the files runs (see --plan).
+   # Install missing tools: "$BRIDGE/bin/easyscan-install-scanners"
    ```
    Sonar-only fallback:
    ```bash

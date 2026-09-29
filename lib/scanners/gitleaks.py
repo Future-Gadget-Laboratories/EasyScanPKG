@@ -7,7 +7,7 @@ import tempfile
 from pathlib import Path
 from typing import Any, Mapping
 
-from scanners._util import relativize, require_binary, run_command
+from scanners._util import ensure_exit, relativize, require_binary, run_command
 from scanners.base import Finding
 
 
@@ -73,7 +73,7 @@ class GitleaksScanner:
             ]
             if no_git:
                 cmd.append("--no-git")
-            run_command(cmd, cwd=workspace, timeout_sec=timeout)
+            ensure_exit(run_command(cmd, cwd=workspace, timeout_sec=timeout), "gitleaks")
             text = ""
             if report.is_file():
                 text = report.read_text(encoding="utf-8", errors="replace")

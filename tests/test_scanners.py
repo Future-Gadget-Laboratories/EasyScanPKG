@@ -63,11 +63,27 @@ _ALL_SCANNERS = {
 
 
 class ScannerConfigTests(unittest.TestCase):
-    def test_defaults_sonar_on_others_off(self) -> None:
-        cfg = resolve_scanner_config()
-        self.assertTrue(cfg["sonar"]["enabled"])
-        for name in _ALL_SCANNERS - {"sonar"}:
-            self.assertFalse(cfg[name]["enabled"], name)
+    def test_defaults_are_auto(self) -> None:
+        # Unset preferences leave every scanner to the routing harness.
+        with mock.patch("scanners.config.load_policy_scanner_overlay", return_value={}):
+            cfg = resolve_scanner_config()
+        for name in _ALL_SCANNERS:
+            self.assertEqual(cfg[name]["enabled"], "auto", name)
+
+    def test_legacy_policy_defaults_are_ignored(self) -> None:
+        from scanners import config as config_mod
+
+        store = mock.Mock()
+        store.snapshot.return_value = {
+            "scan": {"scanners": config_mod._LEGACY_POLICY_SCANNER_DEFAULTS}
+        }
+        with mock.patch("policy_db.resolve_store", return_value=store):
+            self.assertEqual(config_mod.load_policy_scanner_overlay(), {})
+        store.snapshot.return_value = {"scan": {"scanners": {"ruff": {"enabled": False}}}}
+        with mock.patch("policy_db.resolve_store", return_value=store):
+            self.assertEqual(
+                config_mod.load_policy_scanner_overlay(), {"ruff": {"enabled": False}}
+            )
 
     def test_cli_enable_disable(self) -> None:
         cfg = apply_cli_overrides(

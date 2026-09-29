@@ -7,7 +7,7 @@ import io
 from pathlib import Path
 from typing import Any, Mapping
 
-from scanners._util import relativize, require_binary, resolve_paths, run_command
+from scanners._util import ensure_exit, relativize, require_binary, resolve_paths, run_command
 from scanners.base import Finding
 
 
@@ -66,5 +66,5 @@ class FlawfinderScanner:
         minlevel = str(config.get("minlevel") or "1")
         cmd = [binary, "--csv", f"--minlevel={minlevel}", *paths]
         timeout = int(config.get("timeout_sec") or 300)
-        proc = run_command(cmd, cwd=workspace, timeout_sec=timeout)
+        proc = ensure_exit(run_command(cmd, cwd=workspace, timeout_sec=timeout), "flawfinder")
         return parse_flawfinder_csv(proc.stdout or "", workspace=workspace)

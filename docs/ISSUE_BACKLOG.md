@@ -20,12 +20,15 @@ Tooling readiness for one-click EasyScanPKG (local Sonar + agent bridge).
 | T12 | Quality profile XML import per context | `sonar-profile import/export/list/bind` + optional remediation sidecar |
 | T13 | Agent bootstrap + fix-queue skills | `easyscan-bootstrap`, `sonar-fix-queue`; playbooks in `docs/` |
 | T14 | Multi-scanner stage (clang-tidy, Dr. Memory) | `easyscan-scan` + `lib/scanners/*`; enable/disable via CLI/env/`.sft/sonar-policy.json` |
+| T15 | Default scanner tool installation | `bin/easyscan-install-scanners` (apt → pip venv → SHA-256-verified GitHub release); run by `install.sh`/`commission.sh`; `easyscan-check` soft-reports coverage |
+| T16 | Harness routes code to every applicable tool | `lib/scanners/detect.py` + `routing.py`: auto mode by default, `--plan`, `--mode manual`, `--fail-on-error`; crashed tools reported as errors, not clean |
+| T17 | Scanners in CI | `scanner-harness` job installs all default tools and dogfoods `easyscan-scan` |
 
 Gate before publish: `./bin/easyscan-check --offline` and unit tests pass.
 
 ## Example agent workflow
 
 1. `sonar-local-up` / EasyScan desktop
-2. `easyscan-scan --workspace <PROJECT> --sources <dirs>` (add `--enable clang-tidy` / `--enable drmemory` as needed)
+2. `easyscan-scan --workspace <PROJECT> --sources <dirs>` (auto-routes every installed tool; `--plan` to preview)
 3. Fix findings in the scanned project repository (note each issue's `source`)
 4. Re-run the same scan; resolve Sonar-only with documented rationale

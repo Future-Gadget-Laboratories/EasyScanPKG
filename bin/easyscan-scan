@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """All-in-one multi-scanner stage for EasyScanPKG.
 
-Runs enabled scanners (sonar + opt-in tools), merges findings into the
-unified `.sft/issue-checklist.md` (+ JSON twin). Scanners are opt-in/out via
+Detects what the workspace contains, routes each file type to every installed
+scanner that understands it (auto mode, the default), and merges findings into
+the unified `.sft/issue-checklist.md` (+ JSON twin). Force scanners on/off via
 CLI, env, or `.sft/sonar-policy.json` / `.sft/scan-policy.json`.
 """
 
@@ -10,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -20,9 +22,14 @@ bootstrap()
 
 from issue_checklist import build_payload, write_checklist  # noqa: E402
 from scanners import (  # noqa: E402
+    MODE_AUTO,
+    MODE_MANUAL,
     available_scanners,
     dedupe_findings,
+    detect_project,
     findings_to_issues,
+    format_plan,
+    plan_scanners,
     resolve_scanner_config,
     run_scanners,
 )
@@ -75,6 +82,25 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--scanners",
         help="Comma list of scanners to run exclusively (overrides enable/disable defaults)",
+    )
+    parser.add_argument(
+        "--mode",
+        choices=[MODE_AUTO, MODE_MANUAL],
+        default=os.environ.get("EASYSCAN_MODE") or MODE_AUTO,
+        help=(
+            "auto (default): run every installed scanner that applies to the files found; "
+            "manual: Sonar only unless scanners are enabled explicitly. Env: EASYSCAN_MODE"
+        ),
+    )
+    parser.add_argument(
+        "--plan",
+        action="store_true",
+        help="Print which scanners would run on which files, then exit without scanning",
+    )
+    parser.add_argument(
+        "--fail-on-error",
+        action="store_true",
+        help="Exit 2 if any scanner that was selected to run crashed (findings never fail the run)",
     )
     parser.add_argument(
         "--list-scanners",
@@ -163,9 +189,34 @@ def main(argv: list[str] | None = None) -> int:
         "types": args.issue_type,
     }
 
+    profile = detect_project(workspace)
+    scanner_config, decisions = plan_scanners(
+        scanner_config, profile, mode=args.mode, context=context
+    )
+    if args.plan:
+        if args.json:
+            print(
+                json.dumps(
+                    {
+                        "mode": args.mode,
+                        "profile": profile.summary(),
+                        "scanners": [d.to_dict() for d in decisions],
+                    },
+                    indent=2,
+                )
+            )
+        else:
+            print(format_plan(decisions, profile))
+        return 0
+    if not args.json:
+        print(format_plan(decisions, profile), flush=True)
+
     findings, sources_run, sources_skipped = run_scanners(
         workspace, scanner_config, context=context
     )
+    for decision in decisions:
+        if not decision.enabled:
+            sources_skipped[decision.name] = decision.reason
     if not args.no_dedupe:
         findings = dedupe_findings(findings)
     issues = findings_to_issues(findings)
@@ -224,9 +275,11 @@ def main(argv: list[str] | None = None) -> int:
         print(f"open_count={payload['open_count']} resolved={payload['resolved']}")
         if payload["resolved"]:
             print("Done — checklist empty.")
-    return 0 if not any(
-        str(v).startswith("error:") for v in sources_skipped.values()
-    ) or sources_run else 1
+    errored = sorted(k for k, v in sources_skipped.items() if str(v).startswith("error:"))
+    if errored and args.fail_on_error:
+        print(f"Scanner errors: {', '.join(errored)}", file=sys.stderr)
+        return 2
+    return 0 if not errored or sources_run else 1
 
 
 if __name__ == "__main__":

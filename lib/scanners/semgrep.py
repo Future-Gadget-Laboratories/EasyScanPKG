@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 from typing import Any, Mapping
 
-from scanners._util import relativize, require_binary, run_command
+from scanners._util import ensure_exit, relativize, require_binary, run_command
 from scanners.base import Finding
 
 _SEV = {
@@ -73,7 +73,7 @@ class SemgrepScanner:
         workspace = workspace.resolve()
         binary = require_binary("semgrep", config=config)
         rules = str(config.get("config") or config.get("rules") or "p/default")
-        cmd = [binary, "scan", "--json", "--quiet", "--config", rules]
+        cmd = [binary, "scan", "--json", "--metrics=off", "--config", rules]
         exclude = config.get("exclude")
         if isinstance(exclude, (list, tuple)):
             for item in exclude:
@@ -82,5 +82,5 @@ class SemgrepScanner:
             cmd.extend(["--exclude", str(exclude)])
         cmd.append(str(workspace))
         timeout = int(config.get("timeout_sec") or 900)
-        proc = run_command(cmd, cwd=workspace, timeout_sec=timeout)
+        proc = ensure_exit(run_command(cmd, cwd=workspace, timeout_sec=timeout), "semgrep")
         return parse_semgrep_json(proc.stdout or "", workspace=workspace)

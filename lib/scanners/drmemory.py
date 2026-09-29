@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import re
-import shutil
 import subprocess
 import tempfile
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+from scanners._util import find_binary
 from scanners.base import Finding
 
 UNKNOWN_FILE = "(unknown)"
@@ -191,11 +191,11 @@ class DrMemoryScanner:
     ) -> list[Finding]:
         _ = context
         workspace = workspace.resolve()
-        binary = str(config.get("binary") or "drmemory")
-        if not shutil.which(binary) and not Path(binary).is_file():
+        binary = find_binary(str(config.get("binary") or "drmemory"))
+        if not binary:
             raise RuntimeError(
-                f"Dr. Memory binary not found ({binary}). "
-                "Install drmemory or disable the scanner."
+                f"Dr. Memory binary not found ({config.get('binary') or 'drmemory'}). "
+                "Run bin/easyscan-install-scanners --with drmemory or disable the scanner."
             )
 
         target = _parse_target_command(config.get("command"))

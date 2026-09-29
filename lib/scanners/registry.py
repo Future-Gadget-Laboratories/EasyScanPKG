@@ -66,7 +66,7 @@ def run_scanners(
     ctx: dict[str, Any] = dict(context or {})
 
     for name, cfg in scanner_config.items():
-        if not cfg.get("enabled"):
+        if cfg.get("enabled") is not True:  # "auto" must be resolved by the harness first
             sources_skipped[name] = "disabled"
             continue
         if name not in _REGISTRY:

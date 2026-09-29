@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 from typing import Any, Mapping
 
-from scanners._util import relativize, require_binary, run_command
+from scanners._util import ensure_exit, relativize, require_binary, run_command
 from scanners.base import Finding
 
 
@@ -114,7 +114,7 @@ class PipAuditScanner:
                 path = workspace / path
             cmd.extend(["-r", str(path)])
         timeout = int(config.get("timeout_sec") or 600)
-        proc = run_command(cmd, cwd=workspace, timeout_sec=timeout)
+        proc = ensure_exit(run_command(cmd, cwd=workspace, timeout_sec=timeout), "pip-audit")
         return parse_pip_audit_json(proc.stdout or "", workspace=workspace)
 
 
@@ -133,5 +133,8 @@ class OsvScanner:
         binary = require_binary("osv-scanner", config=config)
         cmd = [binary, "--format", "json", "-r", str(workspace)]
         timeout = int(config.get("timeout_sec") or 600)
-        proc = run_command(cmd, cwd=workspace, timeout_sec=timeout)
+        # osv-scanner: 1 = vulnerabilities found, 128 = no package sources found.
+        proc = ensure_exit(
+            run_command(cmd, cwd=workspace, timeout_sec=timeout), "osv-scanner", (0, 1, 128)
+        )
         return parse_osv_json(proc.stdout or "", workspace=workspace)

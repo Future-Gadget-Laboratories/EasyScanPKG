@@ -6,7 +6,7 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any, Mapping
 
-from scanners._util import relativize, require_binary, resolve_paths, run_command
+from scanners._util import ensure_exit, relativize, require_binary, resolve_paths, run_command
 from scanners.base import Finding
 
 _SEV = {
@@ -73,6 +73,10 @@ class CppcheckScanner:
             "--xml",
             "--xml-version=2",
             "--inline-suppr",
+            # Informational only: cppcheck never needs system headers, and the
+            # checkers summary is not a finding.
+            "--suppress=missingIncludeSystem",
+            "--suppress=checkersReport",
         ]
         std = config.get("std")
         if std:
@@ -83,6 +87,6 @@ class CppcheckScanner:
         cmd.extend(paths)
         timeout = int(config.get("timeout_sec") or 600)
         # cppcheck writes XML to stderr by convention
-        proc = run_command(cmd, cwd=workspace, timeout_sec=timeout)
+        proc = ensure_exit(run_command(cmd, cwd=workspace, timeout_sec=timeout), "cppcheck")
         xml_text = proc.stderr or proc.stdout or ""
         return parse_cppcheck_xml(xml_text, workspace=workspace)

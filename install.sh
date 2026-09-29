@@ -15,6 +15,7 @@ NO_PROMPT=0
 INSTALL_ZENITY=0
 INSTALL_COMPOSE=0
 SKIP_CHECK=0
+SKIP_SCANNERS=0
 CHECK_ONLY=0
 
 # Optional example workspace (set EASYSCAN_EXAMPLE_WS); otherwise $PWD
@@ -31,6 +32,7 @@ Usage: $(basename "$0") [options]
   --install-compose    Install docker-compose-v2 plugin via apt (Ubuntu)
   --skip-check         Skip easyscan-check at end
   --check-only         Run easyscan-check --offline and exit (no install)
+  --skip-scanners      Do not install the easyscan-scan tools (ruff, semgrep, …)
   -h, --help           Show this help
 
 Installs EasyScanPKG:
@@ -38,6 +40,7 @@ Installs EasyScanPKG:
   - Cursor MCP + hooks + skills
   - Codex MCP config
   - Local SonarQube Docker stack (fallback)
+  - easyscan-scan tools (ruff, bandit, semgrep, shellcheck, cppcheck, gitleaks, …)
 EOF
 }
 
@@ -49,6 +52,7 @@ while [[ $# -gt 0 ]]; do
     --install-zenity) INSTALL_ZENITY=1; shift ;;
     --install-compose) INSTALL_COMPOSE=1; shift ;;
     --skip-check) SKIP_CHECK=1; shift ;;
+    --skip-scanners) SKIP_SCANNERS=1; shift ;;
     --check-only) CHECK_ONLY=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Unknown option: $1" >&2; usage; exit 2 ;;
@@ -184,6 +188,14 @@ if command -v python3 >/dev/null 2>&1; then
 fi
 
 # Skills (ensure present for agents)
+if [[ "$SKIP_SCANNERS" -eq 0 ]]; then
+  echo "==> Installing easyscan-scan tools (skip with --skip-scanners)"
+  SCANNER_ARGS=()
+  [[ "$NO_PROMPT" -eq 1 ]] && SCANNER_ARGS+=(--non-interactive)
+  "$ROOT/bin/easyscan-install-scanners" "${SCANNER_ARGS[@]}" || \
+    echo "WARN: some scanner tools did not install — easyscan-scan skips them (see above)"
+fi
+
 "$ROOT/bin/install-skills.sh" || true
 
 if [[ "$SKIP_CHECK" -eq 0 ]]; then

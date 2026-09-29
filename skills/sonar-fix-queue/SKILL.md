@@ -29,13 +29,15 @@ If the checklist is missing or stale, **regenerate** (do not invent issues):
 [ -f ~/.config/sft/bridge.env ] && . ~/.config/sft/bridge.env
 BRIDGE="${SFT_AGENT_BRIDGE:-${BRIDGE:?}}"
 
-# Preferred: all-in-one stage (Sonar on by default; enable others as needed)
+# Preferred: all-in-one stage. Auto mode runs every installed scanner that
+# applies to the files in this project; --plan shows the routing first.
+"$BRIDGE/bin/easyscan-scan" --workspace "$PWD" --plan
 "$BRIDGE/bin/easyscan-scan" --workspace "$PWD" --local \
   --project-key "${SONARQUBE_PROJECT_KEY:-local-$(basename "$PWD")}" \
   --sources <dirs>
-# Opt-in examples:
-#   --enable clang-tidy --compile-commands build/compile_commands.json
-#   --enable drmemory --drmemory-command -- ./build/tests
+# Missing tools are skipped with a hint — install them with:
+#   "$BRIDGE/bin/easyscan-install-scanners" --workspace "$PWD"
+# Dynamic analysis needs a target: --asan-command -- ./build/tests_asan
 
 # Sonar-only fallback:
 "$BRIDGE/bin/sonar-scan" --workspace "$PWD" --sources <dirs> \
@@ -92,11 +94,13 @@ clang-tidy needs `compile_commands.json`; drmemory needs a configured run comman
 
 ## Scanner enable/disable
 
-Defaults: Sonar **on**, clang-tidy **off**, drmemory **off**.
+Defaults: every scanner is `auto` — it runs when the project has matching files
+and the tool is installed. Check `sources_skipped` in the checklist for why a
+scanner did not run (`no C/C++ files`, `not installed …`, `error: …`).
 
-Precedence: CLI (`--enable` / `--disable` / `--scanners`) → env
+Precedence (highest first): CLI (`--enable` / `--disable` / `--scanners`) → env
 (`EASYSCAN_SCANNERS`, `EASYSCAN_ENABLE_*`) → `.sft/sonar-policy.json`
-`scan.scanners` → global policy prefs.
+`scan.scanners` → global policy prefs → auto.
 
 ## Do not
 
