@@ -74,6 +74,161 @@
         "For non-loopback hosts prefer https://",
         "If intentional, keep the finding listed; do not 'resolve' without rationale"
       ]
+    },
+    "clang-tidy:bugprone-use-after-move": {
+      "summary": "Use after move",
+      "guidance": [
+        "Do not use an object after std::move / move construction unless it was reassigned",
+        "Prefer copying when both the original and the new owner need a valid value",
+        "Reset or reinitialize the moved-from object before further use"
+      ]
+    },
+    "clang-tidy:bugprone-unchecked-optional-access": {
+      "summary": "Unchecked optional access",
+      "guidance": [
+        "Check has_value()/operator bool before operator* or value()",
+        "Prefer value_or(...) when a default is acceptable"
+      ]
+    },
+    "clang-tidy:clang-analyzer-core.NullDereference": {
+      "summary": "Null pointer dereference (clang analyzer)",
+      "guidance": [
+        "Guard pointer use with null checks",
+        "Prefer references or gsl::not_null when null is not a valid state"
+      ]
+    },
+    "clang-tidy:readability-braces-around-statements": {
+      "summary": "Missing braces around statements",
+      "guidance": [
+        "Add braces to if/for/while bodies for clarity and safer edits"
+      ]
+    },
+    "drmemory:unaddressable-access": {
+      "summary": "Unaddressable memory access",
+      "guidance": [
+        "Validate buffer sizes and pointer lifetimes before dereference",
+        "Watch for off-by-one errors and use-after-free",
+        "Reproduce under Dr. Memory with a small failing command from scan policy"
+      ]
+    },
+    "drmemory:uninitialized-read": {
+      "summary": "Uninitialized memory read",
+      "guidance": [
+        "Initialize locals and buffers before read",
+        "Zero-fill malloc'd memory when contents are read before write"
+      ]
+    },
+    "drmemory:leak": {
+      "summary": "Memory leak",
+      "guidance": [
+        "Free every malloc/new on all exit paths",
+        "Prefer RAII (unique_ptr/shared_ptr) over raw owning pointers"
+      ]
+    },
+    "drmemory:invalid-heap-argument": {
+      "summary": "Invalid heap argument",
+      "guidance": [
+        "Do not free the same pointer twice",
+        "Only free pointers obtained from the matching allocator"
+      ]
+    },
+    "cppcheck:nullPointer": {
+      "summary": "Possible null pointer dereference (cppcheck)",
+      "guidance": [
+        "Guard pointer use after null checks",
+        "Prefer references or not_null when null is invalid"
+      ]
+    },
+    "ruff:E501": {
+      "summary": "Line too long (ruff)",
+      "guidance": [
+        "Wrap or refactor long expressions",
+        "Prefer readability over packing multiple statements"
+      ]
+    },
+    "shellcheck:SC2086": {
+      "summary": "Double-quote to prevent globbing/word splitting",
+      "guidance": [
+        "Quote variable expansions: \"$var\"",
+        "Use arrays for argument lists when possible"
+      ]
+    },
+    "semgrep:python.lang.security": {
+      "summary": "Semgrep security pattern",
+      "guidance": [
+        "Review the Semgrep rule message and linked CWE",
+        "Prefer safe APIs / parameterized calls over string-built commands"
+      ]
+    },
+    "bandit:B101": {
+      "summary": "Use of assert detected",
+      "guidance": [
+        "Do not use assert for security or input validation (stripped with -O)",
+        "Raise explicit exceptions for production checks"
+      ]
+    },
+    "asan:heap-use-after-free": {
+      "summary": "Heap use-after-free (ASan)",
+      "guidance": [
+        "Do not use memory after free/delete",
+        "Null out dangling pointers; prefer unique_ptr/shared_ptr"
+      ]
+    },
+    "ubsan:signed-integer-overflow": {
+      "summary": "Signed integer overflow (UBSan)",
+      "guidance": [
+        "Check bounds before arithmetic that may overflow",
+        "Use wider types or saturating/checked arithmetic APIs"
+      ]
+    },
+    "valgrind:InvalidRead": {
+      "summary": "Invalid read (Valgrind Memcheck)",
+      "guidance": [
+        "Validate pointer lifetimes and buffer sizes",
+        "Watch for off-by-one and use-after-free"
+      ]
+    },
+    "gitleaks:aws-key": {
+      "summary": "Possible secret detected",
+      "guidance": [
+        "Rotate the credential immediately",
+        "Remove secrets from the tree; use a secret manager / env injection"
+      ]
+    },
+    "pip-audit:CVE": {
+      "summary": "Vulnerable Python dependency",
+      "guidance": [
+        "Upgrade the package to a fixed version",
+        "If no fix exists, pin a fork or remove the dependency"
+      ]
+    },
+    "osv:GHSA": {
+      "summary": "OSV vulnerability in lockfile/manifest",
+      "guidance": [
+        "Bump the affected package to a patched release",
+        "Re-run osv-scanner after updating the lockfile"
+      ]
+    },
+    "flawfinder:strcpy": {
+      "summary": "Risky C string API (flawfinder)",
+      "guidance": [
+        "Prefer bounded APIs (strncpy_s / snprintf) or C++ strings",
+        "Validate destination buffer sizes"
+      ]
+    },
+    "clang-analyzer:core.NullDereference": {
+      "summary": "Null dereference (Clang Static Analyzer)",
+      "guidance": [
+        "Add null checks before dereference",
+        "Ensure all paths initialize the pointer"
+      ]
+    },
+    "hadolint:DL3008": {
+      "summary": "Pin versions in apt-get install",
+      "guidance": [
+        "Pin package versions for reproducible images",
+        "Combine RUN apt-get update && install && clean in one layer"
+      ]
     }
   }
 }

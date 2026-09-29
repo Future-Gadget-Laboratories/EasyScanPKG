@@ -33,6 +33,8 @@ DEFAULT_SCAN_PREFS: dict[str, Any] = {
     "languages": [],
     "require_ide_for_file_list": True,
     "allow_snippet_fallback": True,
+    # Scanner prefs (scan.scanners) are optional: unset means easyscan-scan
+    # auto-routes every installed, applicable tool. See lib/scanners/config.py.
 }
 
 DEFAULT_AGENT_PREFS: dict[str, Any] = {

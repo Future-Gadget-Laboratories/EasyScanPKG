@@ -190,6 +190,34 @@ def resolve_creds(
     return _legacy_creds(project_key)
 
 
+def peek_creds(
+    *,
+    context: str | None = None,
+    prefer_local: bool = False,
+) -> tuple[str, str | None]:
+    """Return (url, token or None) the way resolve_creds would, without starting
+    the local server, minting tokens, or exiting. Safe for availability probes."""
+    local = read_env_file(LOCAL_ENV)
+    local_url = local.get("SONARQUBE_URL") or DEFAULT_LOCAL_URL
+    if prefer_local and not context:
+        return local_url, local.get("SONARQUBE_TOKEN")
+    ctx = get_context(context)
+    if ctx is not None:
+        url = ctx.url or DEFAULT_LOCAL_URL
+        token = _token_from_ref(ctx.token_ref)
+        if not token and _is_local_url(url):
+            token = local.get("SONARQUBE_TOKEN")
+        return url, token
+    remote = read_env_file(REMOTE_ENV)
+    url = os.environ.get("SONARQUBE_URL") or remote.get("SONARQUBE_URL") or local_url
+    token = (
+        os.environ.get("SONARQUBE_TOKEN")
+        or remote.get("SONARQUBE_TOKEN")
+        or local.get("SONARQUBE_TOKEN")
+    )
+    return url, token
+
+
 def context_env_exports(ctx: AnalysisContext) -> dict[str, str]:
     """Environment variables to apply for scan wrappers."""
     out: dict[str, str] = {}

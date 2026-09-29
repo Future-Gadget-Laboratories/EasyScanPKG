@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
-import xml.etree.ElementTree as ET
+import xml.etree.ElementTree as ET  # nosec B405 — parsing goes through safe_io
 from pathlib import Path
+
+from safe_io import parse_xml_file
 
 
 def profile_name_from_xml(path: Path) -> str | None:
     try:
-        root = ET.parse(path).getroot()
+        root = parse_xml_file(path)
     except ET.ParseError:
         return None
     name_el = root.find(".//name")
@@ -19,7 +21,7 @@ def profile_name_from_xml(path: Path) -> str | None:
 
 def language_from_xml(path: Path) -> str | None:
     try:
-        root = ET.parse(path).getroot()
+        root = parse_xml_file(path)
     except ET.ParseError:
         return None
     lang = root.find(".//language")

@@ -7,6 +7,7 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass, asdict
 from pathlib import Path
+from safe_io import urlopen as safe_urlopen
 
 
 @dataclass
@@ -37,7 +38,7 @@ def probe_language_support(url: str, token: str | None = None) -> LanguageSuppor
                 "Authorization",
                 "Basic " + base64.b64encode(f"{token}:".encode()).decode("ascii"),
             )
-        with urllib.request.urlopen(req, timeout=10) as resp:
+        with safe_urlopen(req, timeout=10) as resp:
             data = json.loads(resp.read().decode("utf-8"))
             languages = [x.get("key", "") for x in data.get("languages", [])]
     except (OSError, json.JSONDecodeError):
@@ -55,7 +56,7 @@ def probe_language_support(url: str, token: str | None = None) -> LanguageSuppor
     bw = f"{base}/static/cpp/build-wrapper-linux-x86.zip"
     bw_ok = False
     try:
-        with urllib.request.urlopen(bw, timeout=5) as resp:
+        with safe_urlopen(bw, timeout=5) as resp:
             bw_ok = resp.status == 200
     except OSError:
         bw_ok = False
@@ -120,7 +121,7 @@ def install_build_wrapper(url: str, dest_dir: Path) -> Path | None:
     if not support.build_wrapper_url:
         return None
     dest_dir.mkdir(parents=True, exist_ok=True)
-    with urllib.request.urlopen(support.build_wrapper_url, timeout=60) as resp:
+    with safe_urlopen(support.build_wrapper_url, timeout=60) as resp:
         raw = resp.read()
     with zipfile.ZipFile(io.BytesIO(raw)) as zf:
         zf.extractall(dest_dir)
