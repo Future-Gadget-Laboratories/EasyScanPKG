@@ -53,12 +53,12 @@ PROFILES: dict[str, MemoryProfile] = {
     "high": MemoryProfile(limit_mb=6144, web_mb=1024, ce_mb=2048, search_mb=1536, scanner_mb=3072),
 }
 
-_SIZE_RE = re.compile(r"^\s*(\d+(?:\.\d+)?)\s*([kmgt]?)i?b?\s*$", re.IGNORECASE)
+_SIZE_RE = re.compile(r"(\d+(?:\.\d+)?) ?([kmgt]?)(?:ib|b)?", re.IGNORECASE)
 
 
 def parse_size_mb(text: str) -> int:
     """'3g' -> 3072, '2560m' -> 2560, '2560' -> 2560 (MB). Raises ValueError."""
-    match = _SIZE_RE.match(text or "")
+    match = _SIZE_RE.fullmatch((text or "").strip())
     if not match:
         raise ValueError(f"invalid memory size {text!r} (use e.g. 3g or 3072m)")
     value = float(match.group(1))

@@ -67,6 +67,8 @@ class LocalServerStatus:
     token_present: bool
 
 
+_RUNNING_FMT = "{{.State.Running}}"
+
 def _docker() -> str | None:
     return shutil.which("docker")
 
@@ -118,7 +120,7 @@ def _ensure_volumes() -> None:
 
 
 def _container_running(name: str) -> bool:
-    result = run_docker(["inspect", "--type", "container", "-f", "{{.State.Running}}", name])
+    result = run_docker(["inspect", "--type", "container", "-f", _RUNNING_FMT, name])
     return result.returncode == 0 and result.stdout.strip().lower() == "true"
 
 
@@ -162,7 +164,7 @@ def _native_configuration_matches(spec: dict, args: list[str]) -> bool:
 def lease_running(name: str = SQ_CONTAINER) -> bool:
     """Container state for leases: daemon failures must not mean 'stopped'."""
     result = run_docker(
-        ["inspect", "--type", "container", "-f", "{{.State.Running}}", name]
+        ["inspect", "--type", "container", "-f", _RUNNING_FMT, name]
     )
     if result.returncode == 0 and result.stdout.strip().lower() in {"true", "false"}:
         return result.stdout.strip().lower() == "true"
@@ -301,7 +303,7 @@ def is_running() -> bool:
     if not docker:
         return False
     result = run_docker(
-        ["inspect", "--type", "container", "-f", "{{.State.Running}}", SQ_CONTAINER],
+        ["inspect", "--type", "container", "-f", _RUNNING_FMT, SQ_CONTAINER],
     )
     return result.returncode == 0 and result.stdout.strip().lower() == "true"
 

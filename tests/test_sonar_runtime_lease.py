@@ -293,11 +293,14 @@ class LeaseTests(_LeaseDirMixin, unittest.TestCase):
         acquire.assert_not_called()
 
     def test_sigterm_inside_lease_still_releases(self) -> None:
+        def run_lease() -> None:
+            with sonar_lease.lease("x", enabled=True):
+                os.kill(os.getpid(), signal.SIGTERM)
+
         with patch.object(sonar_lease, "acquire", return_value="L1"), \
                 patch.object(sonar_lease, "release", return_value="stopped") as release, \
-                self.assertRaises(SystemExit) as ctx, \
-                sonar_lease.lease("x", enabled=True):
-            os.kill(os.getpid(), signal.SIGTERM)
+                self.assertRaises(SystemExit) as ctx:
+            run_lease()
         self.assertEqual(ctx.exception.code, 128 + signal.SIGTERM)
         release.assert_called_once_with("L1")
         self.assertIs(signal.getsignal(signal.SIGTERM), signal.SIG_DFL)
