@@ -192,7 +192,7 @@ Prefer **code fixes**. Use `falsepositive` / `wontfix` / `accept` only with rati
 | Language | On local Community image? | Notes |
 | --- | --- | --- |
 | Python / JS / TS / Java / C# / Go / … | Yes | Use `sonar-scan` |
-| **C / C++** | **Yes via sonar-cxx** | Auto-installed on `sonar-local-up` from SonarOpenCommunity/sonar-cxx (`cxx` language). Not commercial CFamily/Build Wrapper. `sonar-languages --install-cxx` to force. Disable: `SFT_INSTALL_SONAR_CXX=0`. |
+| **C / C++** | **Yes via sonar-cxx** | Auto-installed on `sonar-local-up` from SonarOpenCommunity/sonar-cxx (`cxx` language). Not commercial CFamily/Build Wrapper. `sonar-languages --install-cxx` to force. Disable: `SFT_INSTALL_SONAR_CXX=0`. "EasyScan CXX" becomes the cxx default only over a built-in/unset default; a custom default is kept; `SFT_SONAR_CXX_SET_DEFAULT=0` never changes it. |
 | **Objective-C** | **No** | Needs commercial CFamily |
 | **Assembly (.s/.asm)** | **No** | No first-party analyzer |
 | **Julia** | **No** | No official Sonar plugin |

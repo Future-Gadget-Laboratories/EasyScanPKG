@@ -2,8 +2,10 @@
 
 Downloads the compatible plugin JAR from GitHub releases into the SonarQube
 extensions volume (never vendors the JAR in git), restarts the server, enables
-CXX file suffixes, and bootstraps a usable quality profile (default Sonar way
-ships with all rules disabled).
+CXX file suffixes, and bootstraps a usable quality profile, "EasyScan CXX"
+(default Sonar way ships with all rules disabled). EasyScan CXX becomes the cxx
+default only while the default is built-in or unset; a custom default is kept,
+and SFT_SONAR_CXX_SET_DEFAULT=0 never changes the default.
 """
 
 from __future__ import annotations
@@ -51,6 +53,8 @@ COMPATIBILITY: list[tuple[str, str]] = [
 PLUGIN_CACHE = Path.home() / ".config" / "sft" / "plugins"
 CONTAINER_PLUGINS_DIR = "/opt/sonarqube/extensions/plugins"
 EASYSCAN_CXX_PROFILE = "EasyScan CXX"
+# Stock cxx profile names, used only when the API omits isBuiltIn.
+STOCK_CXX_PROFILES = frozenset({"Sonar way", "Sonar way comprehensive"})
 DEFAULT_CXX_SUFFIXES = ".cxx,.cpp,.cc,.c,.hxx,.hpp,.hh,.h"
 
 # Built-in cxx rule repositories (exclude external-tool sensors).
@@ -442,17 +446,19 @@ def _cxx_default_decision(url: str, token: str, own_name: str) -> tuple[bool, st
     from sonar_runtime import cxx_set_default_enabled
 
     if not cxx_set_default_enabled():
-        return False, "default cxx profile left unchanged (SFT_SONAR_CXX_SET_DEFAULT=0)"
+        return False, "default cxx profile left unchanged (disabled by SFT_SONAR_CXX_SET_DEFAULT)"
     code, data = api(url, token, "GET", "/api/qualityprofiles/search", query={"language": "cxx"})
     if code != 200 or not isinstance(data, dict):
         return False, f"default cxx profile left unchanged (profile list unavailable: HTTP {code})"
+    # SonarQube keeps exactly one default per language.
     defaults = [p for p in data.get("profiles", []) if p.get("isDefault")]
     if not defaults:
         return True, ""
     current = defaults[0]
     if current.get("name") == own_name:
         return False, ""  # already ours: nothing to do
-    if current.get("isBuiltIn"):
+    built_in = current.get("isBuiltIn")
+    if built_in is True or (built_in is None and current.get("name") in STOCK_CXX_PROFILES):
         return True, ""
     return False, (
         f"keeping custom default cxx profile {current.get('name')!r} "

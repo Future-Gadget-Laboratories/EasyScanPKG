@@ -85,7 +85,7 @@ non-secret file `~/.config/sft/sonar-runtime.env` (`KEY=VALUE` lines).
 | `SFT_SONAR_MEM_LIMIT` / `--mem-limit` | e.g. `3g`, `3072m` (min `1536m`) | Container cap; the profile's heaps are kept if they fit, otherwise refitted inside the cap |
 | `SFT_SONAR_AUTOSTART` / `--no-autostart` | `1`, `0` | `0` creates the containers with `restart: "no"` (no start at boot/daemon restart) |
 | `SFT_SONAR_ON_DEMAND` | `0`, `1` | `1`: `easyscan-scan` and `easyscan-check --require-local` start the stack, use it, then stop it |
-| `SFT_SONAR_CXX_SET_DEFAULT` | `1`, `0` | `1`: make "EasyScan CXX" the default cxx quality profile only when the current default is built-in (e.g. "Sonar way") or unset; a custom default is kept (one log line). `0`: never change the cxx default |
+| `SFT_SONAR_CXX_SET_DEFAULT` | `1`, `0` (also `true`/`false`, `yes`/`no`, `on`/`off`) | `1`: make "EasyScan CXX" the default cxx quality profile only when the current default is built-in (e.g. "Sonar way") or unset; a custom default is kept (one log line). `0`: never change the cxx default |
 
 | Profile | Container cap (no swap) | web | CE | search | scanner | Sized for |
 | --- | --- | --- | --- | --- | --- | --- |

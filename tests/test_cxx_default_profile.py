@@ -94,7 +94,8 @@ class CxxDefaultProfileTests(unittest.TestCase):
             _, err = _run(fake, {"SFT_SONAR_CXX_SET_DEFAULT": value})
             self.assertEqual(fake.set_default_calls, [], value)
             self.assertEqual(fake.default(), "Sonar way")
-            self.assertIn("SFT_SONAR_CXX_SET_DEFAULT=0", err)
+            self.assertEqual(fake.copies, 1)  # EasyScan CXX is still created
+            self.assertIn("disabled by SFT_SONAR_CXX_SET_DEFAULT", err)
 
     def test_opt_out_from_runtime_settings_file(self) -> None:
         fake = FakeSonar([SONAR_WAY])
@@ -103,6 +104,26 @@ class CxxDefaultProfileTests(unittest.TestCase):
                 patch.dict(os.environ, {}, clear=True), \
                 redirect_stderr(io.StringIO()):
             sonar_cxx_plugin.bootstrap_cxx_quality_profile(URL, "tok")
+        self.assertEqual(fake.set_default_calls, [])
+
+    def test_env_overrides_runtime_settings_file(self) -> None:
+        fake = FakeSonar([SONAR_WAY])
+        with patch("sonar_runtime.read_settings", return_value={"SFT_SONAR_CXX_SET_DEFAULT": "0"}), \
+                patch.object(sonar_cxx_plugin, "api", side_effect=fake), \
+                patch.dict(os.environ, {"SFT_SONAR_CXX_SET_DEFAULT": "1"}, clear=True), \
+                redirect_stderr(io.StringIO()):
+            sonar_cxx_plugin.bootstrap_cxx_quality_profile(URL, "tok")
+        self.assertEqual(fake.set_default_calls, ["EasyScan CXX"])
+
+    def test_stock_name_without_builtin_flag_is_replaced(self) -> None:
+        stock = {"key": "swc", "name": "Sonar way comprehensive", "isDefault": True}
+        fake = FakeSonar([stock])
+        _run(fake)
+        self.assertEqual(fake.set_default_calls, ["EasyScan CXX"])
+
+    def test_custom_default_without_builtin_flag_is_kept(self) -> None:
+        fake = FakeSonar([dict(SONAR_WAY, isDefault=False), {"key": "h", "name": "House", "isDefault": True}])
+        _run(fake)
         self.assertEqual(fake.set_default_calls, [])
 
     def test_idempotent_second_run(self) -> None:
