@@ -34,6 +34,7 @@ def write_private(path: Path, text: str) -> None:
             mode="w", encoding="utf-8", dir=path.parent, delete=False
         ) as stream:
             tmp = Path(stream.name)
+            os.chmod(stream.fileno(), 0o600)  # mkstemp already uses 0600; be explicit
             stream.write(text)
         os.replace(tmp, path)
     finally:

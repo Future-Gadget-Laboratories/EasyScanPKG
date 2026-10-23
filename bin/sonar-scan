@@ -5,6 +5,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+ORIG_ARGS=("$@")
 export BRIDGE="$ROOT"
 export SFT_AGENT_BRIDGE="$ROOT"
 
@@ -88,6 +89,13 @@ fi
 
 # Ensure local server when pointing at localhost
 if [[ "$SONARQUBE_URL" == *"127.0.0.1"* ]] || [[ "$SONARQUBE_URL" == *"localhost"* ]]; then
+  # On-demand mode: a direct sonar-scan holds its own lease so another tool's
+  # release cannot stop the server mid-scan (callers that already hold one set
+  # SFT_SONAR_LEASE).
+  if [[ -z "${SFT_SONAR_LEASE:-}" ]] \
+    && SFT_LIB="$ROOT/lib" python3 -c 'import os, sys; sys.path.insert(0, os.environ["SFT_LIB"]); from sonar_runtime import on_demand_enabled; sys.exit(0 if on_demand_enabled() else 1)' 2>/dev/null; then
+    exec "$ROOT/bin/sonar-local-lease" --purpose sonar-scan -- "$0" ${ORIG_ARGS[@]+"${ORIG_ARGS[@]}"}
+  fi
   # stdout is dropped (it can carry login details); errors stay visible.
   if ! "$ROOT/bin/sonar-local-up" --reuse-running >/dev/null; then
     echo "sonar-local-up failed: the local SonarQube is not ours or not healthy; not scanning." >&2

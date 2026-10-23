@@ -40,6 +40,8 @@ LOCK_FILE = LEASE_DIR / "on-demand.lock"
 STATE_FILE = LEASE_DIR / "on-demand.json"
 LOCK_TIMEOUT_S = 900.0  # a cold start under the lock can take minutes
 CE_IDLE_TIMEOUT_S = 300.0
+# Set for processes running under a lease, so nested tools do not take another.
+LEASE_ENV = "SFT_SONAR_LEASE"
 
 
 def _proc_start_time(pid: int) -> str | None:
@@ -201,6 +203,9 @@ def release(lease_id: str | None, *, ops: LeaseOps | None = None) -> str:
             _save(data)
             return "kept running (it was up before the first lease)"
         _save(data)  # persist the release even if CE polling or Docker fails
+        # The lock stays held through the CE wait (<= CE_IDLE_TIMEOUT_S, below
+        # LOCK_TIMEOUT_S) so a new lease cannot join a server about to stop; it
+        # waits and then starts the server again.
         if ops.is_running():
             ops.wait_ce_idle()
         # A failed start may have left only the database running.
@@ -252,9 +257,15 @@ def lease(purpose: str, *, enabled: bool | None = None) -> Iterator[str | None]:
         return
     lease_id = acquire(purpose)
     previous = _trap_sigterm()
+    outer = os.environ.get(LEASE_ENV)
+    os.environ[LEASE_ENV] = lease_id  # child tools (sonar-scan) see they are covered
     try:
         yield lease_id
     finally:
+        if outer is None:
+            os.environ.pop(LEASE_ENV, None)
+        else:
+            os.environ[LEASE_ENV] = outer
         _restore_sigterm(previous)
         try:
             outcome = release(lease_id)

@@ -497,5 +497,21 @@ class LeaseEdgeTests(_LeaseDirMixin, unittest.TestCase):
         self.assertEqual(json.loads(sonar_lease.STATE_FILE.read_text())["leases"], {})
 
 
+
+class NestedLeaseTests(unittest.TestCase):
+    def test_lease_exports_and_restores_env(self) -> None:
+        os.environ.pop(sonar_lease.LEASE_ENV, None)
+        with patch.object(sonar_lease, "acquire", return_value="L9"), \
+                patch.object(sonar_lease, "release", return_value="kept"), \
+                sonar_lease.lease("x", enabled=True):
+            self.assertEqual(os.environ[sonar_lease.LEASE_ENV], "L9")
+        self.assertNotIn(sonar_lease.LEASE_ENV, os.environ)
+
+    def test_direct_sonar_scan_takes_lease_in_on_demand_mode(self) -> None:
+        text = (ROOT / "bin" / "sonar-scan").read_text()
+        self.assertIn('ORIG_ARGS=("$@")', text)
+        self.assertIn('[[ -z "${SFT_SONAR_LEASE:-}" ]]', text)
+        self.assertIn('exec "$ROOT/bin/sonar-local-lease" --purpose sonar-scan -- "$0"', text)
+
 if __name__ == "__main__":
     unittest.main()
