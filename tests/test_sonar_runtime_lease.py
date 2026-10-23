@@ -173,7 +173,7 @@ class FakeOps:
         self.running = False
 
 
-class LeaseTests(unittest.TestCase):
+class _LeaseDirMixin:
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
         base = Path(self.tmp.name)
@@ -195,6 +195,8 @@ class LeaseTests(unittest.TestCase):
         proc.wait()
         return proc.pid
 
+
+class LeaseTests(_LeaseDirMixin, unittest.TestCase):
     def test_starts_when_down_and_last_out_stops(self) -> None:
         fake = FakeOps(running=False)
         lid = sonar_lease.acquire("scan", ops=fake.ops())
@@ -275,9 +277,8 @@ class LeaseTests(unittest.TestCase):
         )
         try:
             self.assertEqual(child.stdout.readline().strip(), "locked")
-            with self.assertRaises(TimeoutError):
-                with sonar_lease._locked(timeout_s=0.5):
-                    pass
+            with self.assertRaises(TimeoutError), sonar_lease._locked(timeout_s=0.5):
+                pass
         finally:
             child.kill()
             child.wait()
@@ -286,17 +287,17 @@ class LeaseTests(unittest.TestCase):
             pass
 
     def test_lease_context_disabled_is_noop(self) -> None:
-        with patch.object(sonar_lease, "acquire") as acquire:
-            with sonar_lease.lease("x", enabled=False) as lid:
-                self.assertIsNone(lid)
+        with patch.object(sonar_lease, "acquire") as acquire, \
+                sonar_lease.lease("x", enabled=False) as lid:
+            self.assertIsNone(lid)
         acquire.assert_not_called()
 
     def test_sigterm_inside_lease_still_releases(self) -> None:
         with patch.object(sonar_lease, "acquire", return_value="L1"), \
-                patch.object(sonar_lease, "release", return_value="stopped") as release:
-            with self.assertRaises(SystemExit) as ctx:
-                with sonar_lease.lease("x", enabled=True):
-                    os.kill(os.getpid(), signal.SIGTERM)
+                patch.object(sonar_lease, "release", return_value="stopped") as release, \
+                self.assertRaises(SystemExit) as ctx, \
+                sonar_lease.lease("x", enabled=True):
+            os.kill(os.getpid(), signal.SIGTERM)
         self.assertEqual(ctx.exception.code, 128 + signal.SIGTERM)
         release.assert_called_once_with("L1")
         self.assertIs(signal.getsignal(signal.SIGTERM), signal.SIG_DFL)
@@ -398,9 +399,9 @@ class ReviewFixTests(unittest.TestCase):
         env = {"SONARQUBE_URL": "http://127.0.0.1:9000", "SONARQUBE_TOKEN": "t"}
         with patch.object(local_server, "read_env_file", return_value=env), \
                 patch.object(local_server, "check_server", return_value=ok), \
-                patch.object(local_server, "require_own_server", side_effect=RuntimeError("foreign")):
-            with self.assertRaises(RuntimeError):
-                local_server.ensure_token()
+                patch.object(local_server, "require_own_server", side_effect=RuntimeError("foreign")), \
+                self.assertRaises(RuntimeError):
+            local_server.ensure_token()
 
     def test_cached_token_remote_url_skips_identity(self) -> None:
         ok = MagicMock(status=AuthStatus.OK)
@@ -421,6 +422,69 @@ class ReviewFixTests(unittest.TestCase):
         self.assertIn("from docker_util import _in_docker_group", text)
         self.assertNotIn('id -nG "$(id -un)"', text)
         self.assertIn("  -e SONAR_SCANNER_JAVA_OPTS \\\n", text)
+
+
+class CeIdleAndEdgeTests(unittest.TestCase):
+    def _run(self, statuses):
+        seq = iter(statuses)
+        with patch("env_write.read_env_file", return_value={"SONARQUBE_TOKEN": "t"}), \
+                patch.object(sonar_lease, "_ce_activity_status", side_effect=lambda *_: next(seq)), \
+                patch.object(sonar_lease.time, "sleep"):
+            return sonar_lease.wait_ce_idle(timeout_s=60)
+
+    def test_transient_errors_are_retried_until_queue_empty(self) -> None:
+        busy = ({"pending": 1, "inProgress": 0}, False)
+        self.assertTrue(self._run([(None, True), busy, (None, True), ({"pending": 0, "inProgress": 0}, False)]))
+
+    def test_permission_error_does_not_wait(self) -> None:
+        self.assertFalse(self._run([(None, False)]))
+
+    def test_deadline_stops_waiting(self) -> None:
+        with patch("env_write.read_env_file", return_value={}), \
+                patch.object(sonar_lease, "_ce_activity_status", return_value=(None, True)), \
+                patch.object(sonar_lease.time, "sleep"):
+            self.assertFalse(sonar_lease.wait_ce_idle(timeout_s=0))
+
+    def test_ce_status_classification(self) -> None:
+        with patch("sonar_api.api", return_value=(200, {"pending": 0})):
+            self.assertEqual(sonar_lease._ce_activity_status("u", "t"), ({"pending": 0}, False))
+        with patch("sonar_api.api", return_value=(403, "forbidden")):
+            self.assertEqual(sonar_lease._ce_activity_status("u", "t"), (None, False))
+        with patch("sonar_api.api", return_value=(503, "")):
+            self.assertEqual(sonar_lease._ce_activity_status("u", "t"), (None, True))
+        with patch("sonar_api.api", side_effect=OSError("refused")):
+            self.assertEqual(sonar_lease._ce_activity_status("u", "t"), (None, True))
+
+
+class LeaseEdgeTests(_LeaseDirMixin, unittest.TestCase):
+    def test_failed_start_clears_ownership_when_nothing_runs(self) -> None:
+        fake = FakeOps(running=False)
+        ops = fake.ops()
+        ops.start = MagicMock(side_effect=RuntimeError("foreign server on 9000"))
+        with self.assertRaises(RuntimeError):
+            sonar_lease.acquire("scan", ops=ops)
+        state = json.loads(sonar_lease.STATE_FILE.read_text())
+        self.assertFalse(state["started_by_lease"])
+        self.assertEqual(state["leases"], {})
+
+    def test_failed_start_keeps_ownership_of_half_started_stack(self) -> None:
+        fake = FakeOps(running=False)
+        ops = fake.ops()
+
+        def half_start():
+            fake.running = True
+            raise RuntimeError("timed out waiting for UP")
+
+        ops.start = half_start
+        with self.assertRaises(RuntimeError):
+            sonar_lease.acquire("scan", ops=ops)
+        self.assertIn("stopped", sonar_lease.stop_if_idle(ops=fake.ops()))
+
+    def test_active_leases_persists_pruning(self) -> None:
+        fake = FakeOps(running=False)
+        sonar_lease.acquire("crashed", ops=fake.ops(), pid=self._dead_pid())
+        self.assertEqual(sonar_lease.active_leases()["leases"], {})
+        self.assertEqual(json.loads(sonar_lease.STATE_FILE.read_text())["leases"], {})
 
 
 if __name__ == "__main__":

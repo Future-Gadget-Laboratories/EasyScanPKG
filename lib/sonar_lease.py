@@ -156,7 +156,13 @@ def acquire(purpose: str, *, ops: LeaseOps | None = None, pid: int | None = None
         # last lease holder crashed before releasing).
         # start() is idempotent: it brings the stack up if needed, waits for UP,
         # and refuses a foreign server on the port.
-        ops.start()
+        try:
+            ops.start()
+        except BaseException:
+            if not data["leases"] and not ops.is_running():
+                data["started_by_lease"] = False  # nothing of ours is left running
+                _save(data)
+            raise
         data["leases"][lease_id] = {
             "pid": pid,
             "proc_start": _proc_start_time(pid),
@@ -198,7 +204,8 @@ def stop_if_idle(*, ops: LeaseOps | None = None) -> str:
 def active_leases() -> dict:
     with _locked():
         data = _load()
-        _prune(data)
+        if _prune(data):
+            _save(data)
         return data
 
 
@@ -237,20 +244,27 @@ def _restore_sigterm(previous) -> None:
         signal.signal(signal.SIGTERM, previous)
 
 
-def _ce_activity_status(url: str, token: str) -> dict | None:
+def _ce_activity_status(url: str, token: str) -> tuple[dict | None, bool]:
+    """(status, retry). retry is False when the queue cannot be observed at all."""
     from sonar_api import api
 
     try:
         code, body = api(url, token, "GET", "/api/ce/activity_status", timeout=10)
     except OSError:
-        return None
-    return body if code == 200 and isinstance(body, dict) else None
+        return None, True  # transient: server busy or restarting
+    if code == 200 and isinstance(body, dict):
+        return body, False
+    if code in (401, 403):
+        return None, False  # token cannot see the queue; waiting will not help
+    return None, True
 
 
-def wait_ce_idle(timeout_s: float = CE_IDLE_TIMEOUT_S) -> None:
+def wait_ce_idle(timeout_s: float = CE_IDLE_TIMEOUT_S, *, poll_s: float = 3.0) -> bool:
     """Wait until the Compute Engine has no pending/in-progress tasks.
 
     Stopping mid-task would lose the analysis report a scan just uploaded.
+    Only an explicit empty queue counts as idle; transient API errors are
+    retried until the deadline. Returns True when the queue was seen empty.
     """
     from env_write import LOCAL_ENV, read_env_file
 
@@ -258,8 +272,16 @@ def wait_ce_idle(timeout_s: float = CE_IDLE_TIMEOUT_S) -> None:
     url = local.get("SONARQUBE_URL", "http://127.0.0.1:9000")
     token = local.get("SONARQUBE_TOKEN", "")
     deadline = time.monotonic() + timeout_s
-    while time.monotonic() < deadline:
-        status = _ce_activity_status(url, token)
-        if status is None or (status.get("pending", 0) == 0 and status.get("inProgress", 0) == 0):
-            return
-        time.sleep(3)
+    while True:
+        status, retry = _ce_activity_status(url, token)
+        if status is not None and status.get("pending", 0) == 0 and status.get("inProgress", 0) == 0:
+            return True
+        if status is None and not retry:
+            print("on-demand SonarQube: cannot read the CE queue (permission); stopping anyway",
+                  file=sys.stderr, flush=True)
+            return False
+        if time.monotonic() >= deadline:
+            print("on-demand SonarQube: CE queue still busy or unreadable at the deadline; stopping",
+                  file=sys.stderr, flush=True)
+            return False
+        time.sleep(poll_s)
