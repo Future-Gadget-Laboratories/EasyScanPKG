@@ -5,6 +5,7 @@ flags, the process environment, then the optional non-secret settings file
 ``~/.config/sft/sonar-runtime.env`` (KEY=VALUE lines). No credentials live there.
 
 * ``SFT_SONAR_MEM_PROFILE``  low (default) | normal | high
+* ``SFT_SONAR_CXX_SET_DEFAULT``  1 (default) | 0: never change the cxx default profile
 * ``SFT_SONAR_MEM_LIMIT``    container memory cap, e.g. ``3g`` or ``3072m``;
   JVM heaps are fitted inside it when the profile's heaps do not fit.
 * ``SFT_SONAR_AUTOSTART``    1 (default, restart: unless-stopped) | 0 (restart: "no")
@@ -100,6 +101,11 @@ def autostart_enabled(*, settings: dict[str, str] | None = None) -> bool:
 
 def on_demand_enabled(*, settings: dict[str, str] | None = None) -> bool:
     return _truthy(setting("SFT_SONAR_ON_DEMAND", "0", settings=settings))
+
+
+def cxx_set_default_enabled(*, settings: dict[str, str] | None = None) -> bool:
+    """False when SFT_SONAR_CXX_SET_DEFAULT=0: never change the cxx default profile."""
+    return _truthy(setting("SFT_SONAR_CXX_SET_DEFAULT", "1", settings=settings))
 
 
 def restart_policy(*, settings: dict[str, str] | None = None) -> str:

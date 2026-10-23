@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import sys
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -406,7 +407,7 @@ def _set_default_profile(url: str, token: str, *, language: str, profile_name: s
 def bootstrap_cxx_quality_profile(
     url: str = DEFAULT_LOCAL_URL, token: str | None = None
 ) -> str | None:
-    """Copy CXX Sonar way → EasyScan CXX, activate built-in rules, set default."""
+    """Copy CXX Sonar way → EasyScan CXX, activate built-in rules, default only if safe."""
     tok = token or _admin_token()
     base = url.rstrip("/")
     sonar_way = _find_profile(base, tok, "cxx", "Sonar way")
@@ -423,8 +424,40 @@ def bootstrap_cxx_quality_profile(
         return None
     _activate_builtin_cxx_rules(base, tok, profile["key"])
     name = profile.get("name") or EASYSCAN_CXX_PROFILE
-    _set_default_profile(base, tok, language="cxx", profile_name=name)
+    set_default, note = _cxx_default_decision(base, tok, name)
+    if set_default:
+        _set_default_profile(base, tok, language="cxx", profile_name=name)
+    elif note:
+        print(f"sonar-cxx: {note}", file=sys.stderr)
     return name
+
+
+def _cxx_default_decision(url: str, token: str, own_name: str) -> tuple[bool, str]:
+    """Whether to make own_name the cxx default, plus a one-line note when not.
+
+    Only a built-in default (e.g. "Sonar way") or no default is replaced; a
+    custom profile someone made the default is kept. SFT_SONAR_CXX_SET_DEFAULT=0
+    never changes the default.
+    """
+    from sonar_runtime import cxx_set_default_enabled
+
+    if not cxx_set_default_enabled():
+        return False, "default cxx profile left unchanged (SFT_SONAR_CXX_SET_DEFAULT=0)"
+    code, data = api(url, token, "GET", "/api/qualityprofiles/search", query={"language": "cxx"})
+    if code != 200 or not isinstance(data, dict):
+        return False, f"default cxx profile left unchanged (profile list unavailable: HTTP {code})"
+    defaults = [p for p in data.get("profiles", []) if p.get("isDefault")]
+    if not defaults:
+        return True, ""
+    current = defaults[0]
+    if current.get("name") == own_name:
+        return False, ""  # already ours: nothing to do
+    if current.get("isBuiltIn"):
+        return True, ""
+    return False, (
+        f"keeping custom default cxx profile {current.get('name')!r} "
+        f"({own_name!r} not made default; set it in SonarQube if wanted)"
+    )
 
 
 def _configure_cxx_runtime(url: str, token: str, *, bootstrap_profile: bool) -> str | None:
