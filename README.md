@@ -102,9 +102,13 @@ change only the restart policy of an existing container without restarting it:
 **On-demand mode** (`SFT_SONAR_ON_DEMAND=1`, best with `SFT_SONAR_AUTOSTART=0`):
 each scan or check takes a lease under an exclusive `flock`
 (`~/.config/sft/sonar-local/on-demand.lock`). The first lease starts the stack if
-it is down and waits for UP; the last lease out waits for the Compute Engine
-queue to drain and then **stops** the containers (never removes them or their
-volumes). No scan stops the server under another lease. A server that was
+it is down, waits for UP and makes sure the scan token exists; a lease that
+joins a running server never reconfigures or recreates it (memory settings apply
+on the next start). The last lease out waits until the Compute Engine queue is
+confirmed empty and then **stops** the containers (never removes them or their
+volumes); if the queue cannot be confirmed idle, the server is left running for
+`--if-idle`. No scan stops the server under another lease, and
+`sonar-local-down` holds the same lock while it stops. A server that was
 already running before the first lease is left running. Leases of crashed runs
 (process gone, or PID reused) are pruned on the next acquire/release; run
 `sonar-local-down --if-idle` (safe from cron) to stop a lease-started server
