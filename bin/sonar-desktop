@@ -164,16 +164,18 @@ STATUS="$("$ROOT/bin/sonar-mcp-status" --workspace "$WORKSPACE" --json 2>/dev/nu
 if [[ "$OPEN_CURSOR" -eq 1 ]]; then
   if command -v cursor >/dev/null 2>&1; then
     notify "Cursor" "Opening $WORKSPACE"
-    # Pass Sonar env into Cursor process so MCP stdio inherits tokens
-    env \
-      SONARQUBE_URL="${SONARQUBE_URL:-}" \
-      SONARQUBE_TOKEN="${SONARQUBE_TOKEN:-}" \
-      SONARQUBE_PROJECT_KEY="${SONARQUBE_PROJECT_KEY:-}" \
-      SONARQUBE_IDE_PORT="${SONARQUBE_IDE_PORT:-}" \
-      BRIDGE="$ROOT" \
-      SFT_AGENT_BRIDGE="$ROOT" \
+    # Pass Sonar env into Cursor process so MCP stdio inherits tokens.
+    # Exported (not `env NAME=value`) so the token never appears in argv / ps.
+    (
+      export SONARQUBE_URL="${SONARQUBE_URL:-}"
+      export SONARQUBE_TOKEN="${SONARQUBE_TOKEN:-}"
+      export SONARQUBE_PROJECT_KEY="${SONARQUBE_PROJECT_KEY:-}"
+      export SONARQUBE_IDE_PORT="${SONARQUBE_IDE_PORT:-}"
+      export BRIDGE="$ROOT"
+      export SFT_AGENT_BRIDGE="$ROOT"
       cursor "$WORKSPACE" >/dev/null 2>&1 &
-    disown || true
+      disown || true
+    )
   else
     notify "Cursor missing" "Install Cursor, then re-run this launcher"
   fi

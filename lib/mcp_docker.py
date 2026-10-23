@@ -8,7 +8,6 @@ tokens come only from environment / env files.
 from __future__ import annotations
 
 import shutil
-import subprocess
 from dataclasses import dataclass
 
 from docker_util import docker_ok, run_docker
@@ -126,7 +125,8 @@ def ensure_up(
         )
         return status(store)
 
-    result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    # Secrets are passed as bare `-e NAME` (inherited env), never in argv.
+    result = run_docker(cmd[1:])
     store.record_event(
         "mcp_up",
         {
@@ -164,12 +164,7 @@ def ensure_down(store: PolicyStore | None = None) -> McpStatus:
     prefs = store.get_connection_prefs()
     docker = _docker()
     if docker and container_running(prefs.mcp_container_name):
-        subprocess.run(
-            [docker, "rm", "-f", prefs.mcp_container_name],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
+        run_docker(["rm", "-f", prefs.mcp_container_name])
         store.record_event("mcp_down", {"container": prefs.mcp_container_name})
     # Never wipe policy DB on down
     return status(store)

@@ -38,14 +38,25 @@ set +a
 ## 1. Start / stop the server
 
 ```bash
-"$BRIDGE/bin/sonar-local-up"      # Docker Postgres + SonarQube; bootstraps token + prints UI admin login
-"$BRIDGE/bin/sonar-local-down"
+"$BRIDGE/bin/sonar-local-up"      # Docker Postgres + SonarQube; bootstraps token (password hidden unless --show-password)
+"$BRIDGE/bin/sonar-local-down"    # stops containers, keeps them; --remove deletes containers (never volumes)
+"$BRIDGE/bin/sonar-local-down" --if-idle   # stop a server on-demand leases started once nobody uses it
+"$BRIDGE/bin/sonar-local-lease" -- CMD     # hold the server for CMD (starts it if down; last user out stops it)
 "$BRIDGE/bin/sonar-desktop"       # up + MCP + open Cursor (daily / after reboot)
 "$BRIDGE/bin/easyscan-check"      # one-click readiness gate
 ```
 
+Memory / lifecycle knobs (env or `~/.config/sft/sonar-runtime.env`):
+`SFT_SONAR_MEM_PROFILE=low|normal|high` (default low), `SFT_SONAR_MEM_LIMIT=3g`,
+`SFT_SONAR_AUTOSTART=0` (restart "no"), `SFT_SONAR_ON_DEMAND=1` (scan/check start
+the stack and stop it after the last lease; containers and volumes are kept).
+
 First boot can take several minutes. UI: http://127.0.0.1:9000  
-Login is **username `admin`** plus the password printed by `sonar-local-up` (also in `~/.config/sft/sonar-local-admin.json`).
+Login is **username `admin`** plus the password in `~/.config/sft/sonar-local-admin.json` (or `sonar-local-up --show-password`).
+
+If another SonarQube already answers on :9000, `sonar-local-up` refuses to start and
+`easyscan-check` fails `local_server` naming that server. Stop it first; never bootstrap
+credentials against it.
 
 ## 2. Access token for API / scanner / MCP / agent skills
 
@@ -181,7 +192,7 @@ Prefer **code fixes**. Use `falsepositive` / `wontfix` / `accept` only with rati
 | Language | On local Community image? | Notes |
 | --- | --- | --- |
 | Python / JS / TS / Java / C# / Go / … | Yes | Use `sonar-scan` |
-| **C / C++** | **Yes via sonar-cxx** | Auto-installed on `sonar-local-up` from SonarOpenCommunity/sonar-cxx (`cxx` language). Not commercial CFamily/Build Wrapper. `sonar-languages --install-cxx` to force. Disable: `SFT_INSTALL_SONAR_CXX=0`. |
+| **C / C++** | **Yes via sonar-cxx** | Auto-installed on `sonar-local-up` from SonarOpenCommunity/sonar-cxx (`cxx` language). Not commercial CFamily/Build Wrapper. `sonar-languages --install-cxx` to force. Disable: `SFT_INSTALL_SONAR_CXX=0`. "EasyScan CXX" becomes the cxx default only over a built-in/unset default; a custom default is kept; `SFT_SONAR_CXX_SET_DEFAULT=0` never changes it. |
 | **Objective-C** | **No** | Needs commercial CFamily |
 | **Assembly (.s/.asm)** | **No** | No first-party analyzer |
 | **Julia** | **No** | No official Sonar plugin |

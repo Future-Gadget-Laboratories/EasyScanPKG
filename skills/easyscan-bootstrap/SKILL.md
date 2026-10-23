@@ -39,7 +39,7 @@ chmod +x commission.sh install.sh bin/*
 "$BRIDGE/bin/sonar-desktop"           # up + MCP + skills + open Cursor
 ```
 
-UI: http://127.0.0.1:9000 — username `admin`, password printed by `sonar-local-up`  
+UI: http://127.0.0.1:9000 — username `admin`, password hidden by default (`sonar-local-up --show-password`, or the admin state file)  
 Token file (never print): `~/.config/sft/sonar-local.env`
 
 ### If the local token is missing / rejected

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -13,14 +14,64 @@ from _bootstrap import bootstrap
 
 bootstrap()
 
-from local_server import admin_login, ensure_token, start  # noqa: E402
+from local_server import (  # noqa: E402
+    DEFAULT_LOCAL_URL,
+    admin_login,
+    ensure_token,
+    lease_running,
+    require_own_server,
+    start,
+    status,
+    wait_for_system_up,
+)
+from sonar_runtime import PROFILES, describe, resolve_memory  # noqa: E402
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--json", action="store_true")
+    parser.add_argument(
+        "--reuse-running", action="store_true",
+        help="verify an existing running server without recreating it",
+    )
+    parser.add_argument(
+        "--show-password",
+        action="store_true",
+        help="print the local admin password (default: only the state file path)",
+    )
+    parser.add_argument(
+        "--mem-profile",
+        choices=sorted(PROFILES),
+        help="memory profile (env SFT_SONAR_MEM_PROFILE; default low, for 8 GB hosts)",
+    )
+    parser.add_argument(
+        "--mem-limit",
+        help="container memory cap such as 3g (env SFT_SONAR_MEM_LIMIT); heaps are fitted inside",
+    )
+    parser.add_argument(
+        "--no-autostart",
+        action="store_true",
+        help='create containers with restart: "no" (env SFT_SONAR_AUTOSTART=0)',
+    )
     args = parser.parse_args()
-    st = start(wait=True)
+    if args.mem_profile:
+        os.environ["SFT_SONAR_MEM_PROFILE"] = args.mem_profile
+    if args.mem_limit:
+        os.environ["SFT_SONAR_MEM_LIMIT"] = args.mem_limit
+    if args.no_autostart:
+        os.environ["SFT_SONAR_AUTOSTART"] = "0"
+    try:
+        mem = resolve_memory()
+    except ValueError as exc:
+        parser.error(str(exc))
+    print(f"local SonarQube memory: {describe(mem)}", file=sys.stderr)
+    if args.reuse_running and lease_running():
+        if not wait_for_system_up(DEFAULT_LOCAL_URL):
+            raise RuntimeError("local SonarQube did not become UP")
+        require_own_server()
+        st = status()
+    else:
+        st = start(wait=True)
     token = ensure_token()
     login = admin_login()
     payload = {
@@ -29,7 +80,7 @@ def main() -> int:
         "url": st.url,
         "token_bootstrapped": bool(token),
         "admin_username": login["username"],
-        "admin_password": login["password"],
+        "admin_password": login["password"] if args.show_password else None,
         "admin_state_file": login["state_file"],
     }
     if args.json:
@@ -39,10 +90,12 @@ def main() -> int:
         print("UI login (open in a browser):")
         print(f"  url:      {login['url']}")
         print(f"  username: {login['username']}")
-        if login["password"]:
+        if not login["password"]:
+            print("  password: (not set yet — check boot logs)")
+        elif args.show_password:
             print(f"  password: {login['password']}")
         else:
-            print("  password: (not set yet — check boot logs)")
+            print("  password: (hidden; re-run with --show-password or read the state file)")
         print(f"  saved in: {login['state_file']}")
     return 0
 
