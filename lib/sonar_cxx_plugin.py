@@ -55,6 +55,7 @@ CONTAINER_PLUGINS_DIR = "/opt/sonarqube/extensions/plugins"
 EASYSCAN_CXX_PROFILE = "EasyScan CXX"
 # Stock cxx profile names, used only when the API omits isBuiltIn.
 STOCK_CXX_PROFILES = frozenset({"Sonar way", "Sonar way comprehensive"})
+QP_SEARCH_PATH = "/api/qualityprofiles/search"
 DEFAULT_CXX_SUFFIXES = ".cxx,.cpp,.cc,.c,.hxx,.hpp,.hh,.h"
 
 # Built-in cxx rule repositories (exclude external-tool sensors).
@@ -317,7 +318,7 @@ def _find_profile(url: str, token: str, language: str, name: str) -> dict | None
         url,
         token,
         "GET",
-        "/api/qualityprofiles/search",
+        QP_SEARCH_PATH,
         query={"language": language},
     )
     if code != 200 or not isinstance(data, dict):
@@ -417,7 +418,7 @@ def bootstrap_cxx_quality_profile(
     sonar_way = _find_profile(base, tok, "cxx", "Sonar way")
     if not sonar_way or not sonar_way.get("key"):
         code, data = api(
-            base, tok, "GET", "/api/qualityprofiles/search", query={"language": "cxx"}
+            base, tok, "GET", QP_SEARCH_PATH, query={"language": "cxx"}
         )
         if code == 200 and isinstance(data, dict) and data.get("profiles"):
             sonar_way = data["profiles"][0]
@@ -447,7 +448,7 @@ def _cxx_default_decision(url: str, token: str, own_name: str) -> tuple[bool, st
 
     if not cxx_set_default_enabled():
         return False, "default cxx profile left unchanged (disabled by SFT_SONAR_CXX_SET_DEFAULT)"
-    code, data = api(url, token, "GET", "/api/qualityprofiles/search", query={"language": "cxx"})
+    code, data = api(url, token, "GET", QP_SEARCH_PATH, query={"language": "cxx"})
     if code != 200 or not isinstance(data, dict):
         return False, f"default cxx profile left unchanged (profile list unavailable: HTTP {code})"
     # SonarQube keeps exactly one default per language.
