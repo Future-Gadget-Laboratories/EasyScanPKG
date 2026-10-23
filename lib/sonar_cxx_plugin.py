@@ -434,6 +434,104 @@ def _configure_cxx_runtime(url: str, token: str, *, bootstrap_profile: bool) -> 
     return None
 
 
+def _target_server_version(url: str) -> tuple[str | None, str | None]:
+    """(version of OUR container, refusal detail).
+
+    The plugin goes into the sft-sonarqube container, so it is chosen for that
+    container's version. Asking whatever answers the URL picked a 9.x plugin
+    for a 26.x container when another server held port 9000, which crash-looped
+    the container.
+    """
+    from local_server import container_server_version, server_identity  # lazy: import cycle
+
+    ident = server_identity(url)
+    if ident.owner == "foreign":
+        return None, f"refusing cxx install: {ident.detail}"
+    version = ident.container_version or container_server_version() or None
+    if version is None and ident.owner == "sft":
+        version = fetch_server_version(url)
+    return version, None
+
+
+def _configure_existing(
+    url: str, *, jar_name: str, tag: str, bootstrap_profile: bool
+) -> CxxInstallResult:
+    try:
+        token = _admin_token()
+        profile = _configure_cxx_runtime(url, token, bootstrap_profile=bootstrap_profile)
+    except Exception as exc:  # noqa: BLE001 — surface config errors
+        return CxxInstallResult(
+            ok=False,
+            detail=f"installed but configure failed: {exc}",
+            jar_name=jar_name,
+            tag=tag,
+            has_cxx=True,
+        )
+    return CxxInstallResult(
+        ok=True,
+        detail="already installed",
+        jar_name=jar_name,
+        tag=tag,
+        profile=profile,
+        has_cxx=True,
+    )
+
+
+def _copy_and_restart(local_jar: Path, *, jar_name: str, tag: str) -> CxxInstallResult | None:
+    """Copy the JAR in and restart; on a failed start roll back. None = success."""
+    _docker_cp_into_plugins(local_jar)
+    try:
+        _restart_sonarqube(wait=True)
+    except RuntimeError as exc:
+        rolled_back = _rollback_plugin()
+        outcome = "plugin disabled, server back UP" if rolled_back else "rollback failed"
+        return CxxInstallResult(
+            ok=False,
+            detail=f"{jar_name} broke server startup ({exc}); {outcome}",
+            jar_name=jar_name,
+            tag=tag,
+            restarted=True,
+        )
+    return None
+
+
+def _install_plugin(
+    url: str,
+    *,
+    plugin_url: str,
+    jar_name: str,
+    tag: str,
+    copy: bool,
+    bootstrap_profile: bool,
+) -> CxxInstallResult:
+    local_jar = download_plugin_jar(plugin_url, jar_name)
+    _remove_old_cxx_plugins(keep=jar_name)
+    if copy:
+        failed = _copy_and_restart(local_jar, jar_name=jar_name, tag=tag)
+        if failed is not None:
+            return failed
+    token = _admin_token()
+    profile = _configure_cxx_runtime(url, token, bootstrap_profile=bootstrap_profile)
+    if not language_has_cxx(url, token):
+        return CxxInstallResult(
+            ok=False,
+            detail="plugin copied but language 'cxx' not listed after restart",
+            jar_name=jar_name,
+            tag=tag,
+            profile=profile,
+            restarted=copy,
+        )
+    return CxxInstallResult(
+        ok=True,
+        detail="installed" if copy else "configured",
+        jar_name=jar_name,
+        tag=tag,
+        profile=profile,
+        has_cxx=True,
+        restarted=copy,
+    )
+
+
 def ensure_cxx_plugin(
     *,
     url: str = DEFAULT_LOCAL_URL,
@@ -444,24 +542,14 @@ def ensure_cxx_plugin(
     if not install_sonar_cxx_enabled() and not force:
         return CxxInstallResult(ok=True, detail="skipped (SFT_INSTALL_SONAR_CXX disabled)")
 
-    from local_server import (  # lazy: avoid import cycle
-        container_server_version,
-        is_running,
-        server_identity,
-    )
+    from local_server import is_running  # lazy: avoid import cycle
 
     if not is_running():
         return CxxInstallResult(ok=False, detail="local SonarQube container not running")
 
-    # The plugin goes into OUR container, so pick it for OUR container's version.
-    # Asking whatever answers the URL picked a 9.x plugin for a 26.x container
-    # when another server held port 9000, which crash-looped the container.
-    ident = server_identity(url)
-    if ident.owner == "foreign":
-        return CxxInstallResult(ok=False, detail=f"refusing cxx install: {ident.detail}")
-    version = ident.container_version or container_server_version() or None
-    if version is None and ident.owner == "sft":
-        version = fetch_server_version(url)
+    version, refusal = _target_server_version(url)
+    if refusal:
+        return CxxInstallResult(ok=False, detail=refusal)
     try:
         plugin_url, jar_name, tag = resolve_plugin_url(version)
     except (OSError, RuntimeError, ValueError) as exc:
@@ -470,77 +558,19 @@ def ensure_cxx_plugin(
     if not is_plugin_jar_name(jar_name):
         return CxxInstallResult(ok=False, detail=f"refusing non-plugin JAR: {jar_name}")
 
-    restarted = False
     already = _plugin_already_installed(jar_name)
-    has = language_has_cxx(url)
-
-    if already and has and not force:
-        try:
-            token = _admin_token()
-            profile = _configure_cxx_runtime(url, token, bootstrap_profile=bootstrap_profile)
-            return CxxInstallResult(
-                ok=True,
-                detail="already installed",
-                jar_name=jar_name,
-                tag=tag,
-                profile=profile,
-                has_cxx=True,
-            )
-        except Exception as exc:  # noqa: BLE001 — surface config errors
-            return CxxInstallResult(
-                ok=False,
-                detail=f"installed but configure failed: {exc}",
-                jar_name=jar_name,
-                tag=tag,
-                has_cxx=has,
-            )
-
+    if already and language_has_cxx(url) and not force:
+        return _configure_existing(
+            url, jar_name=jar_name, tag=tag, bootstrap_profile=bootstrap_profile
+        )
     try:
-        local_jar = download_plugin_jar(plugin_url, jar_name)
-        _remove_old_cxx_plugins(keep=jar_name)
-        if not already or force:
-            _docker_cp_into_plugins(local_jar)
-            try:
-                _restart_sonarqube(wait=True)
-            except RuntimeError as exc:
-                rolled_back = _rollback_plugin()
-                return CxxInstallResult(
-                    ok=False,
-                    detail=(
-                        f"{jar_name} broke server startup ({exc}); "
-                        + ("plugin disabled, server back UP" if rolled_back else "rollback failed")
-                    ),
-                    jar_name=jar_name,
-                    tag=tag,
-                    restarted=True,
-                )
-            restarted = True
-        token = _admin_token()
-        profile = _configure_cxx_runtime(url, token, bootstrap_profile=bootstrap_profile)
-        has = language_has_cxx(url, token)
-        if not has:
-            return CxxInstallResult(
-                ok=False,
-                detail="plugin copied but language 'cxx' not listed after restart",
-                jar_name=jar_name,
-                tag=tag,
-                profile=profile,
-                restarted=restarted,
-            )
-        return CxxInstallResult(
-            ok=True,
-            detail="installed" if restarted else "configured",
+        return _install_plugin(
+            url,
+            plugin_url=plugin_url,
             jar_name=jar_name,
             tag=tag,
-            profile=profile,
-            has_cxx=True,
-            restarted=restarted,
+            copy=not already or force,
+            bootstrap_profile=bootstrap_profile,
         )
     except Exception as exc:  # noqa: BLE001
-        return CxxInstallResult(
-            ok=False,
-            detail=str(exc),
-            jar_name=jar_name,
-            tag=tag,
-            restarted=restarted,
-        )
+        return CxxInstallResult(ok=False, detail=str(exc), jar_name=jar_name, tag=tag)

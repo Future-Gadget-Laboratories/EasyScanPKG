@@ -372,6 +372,12 @@ def server_identity(url: str = DEFAULT_LOCAL_URL) -> ServerIdentity:
         return ServerIdentity("none", f"{SQ_CONTAINER} not running; nothing answers {url}")
     if host is None:
         return ServerIdentity("starting", f"{SQ_CONTAINER} running; {url} not answering yet")
+    return _identity_of_answering_server(url, host)
+
+
+def _identity_of_answering_server(url: str, host: dict) -> ServerIdentity:
+    """Our container runs and something answers url: is it our container?"""
+    host_version = str(host.get("version") or "")
     if not _container_publishes_port():
         return ServerIdentity(
             "foreign",
@@ -518,6 +524,31 @@ def pull_aux_images() -> list[str]:
     return failed
 
 
+def _wait_up_or_recover() -> None:
+    """Wait for UP; on failure apply a known recovery once, then wait again."""
+    if wait_for_system_up(DEFAULT_LOCAL_URL):
+        return
+    recovery = _recover_failed_start()
+    if recovery and wait_for_system_up(DEFAULT_LOCAL_URL, timeout_s=300.0):
+        print(f"NOTE: local SonarQube recovered: {recovery}", flush=True)
+        return
+    after = f" (after: {recovery})" if recovery else ""
+    raise RuntimeError(
+        f"local SonarQube did not become UP at {DEFAULT_LOCAL_URL}{after}; "
+        f"see: docker logs {SQ_CONTAINER}"
+    )
+
+
+def _pull_aux_images_soft() -> None:
+    try:
+        failed = pull_aux_images()
+    except Exception as exc:  # noqa: BLE001 — scans pull again on demand
+        print(f"NOTE: image pull skipped: {exc}", flush=True)
+        return
+    if failed:
+        print(f"NOTE: could not pull {', '.join(failed)}", flush=True)
+
+
 def start(*, wait: bool = True) -> LocalServerStatus:
     ident = server_identity()
     if ident.owner == "foreign":
@@ -529,17 +560,15 @@ def start(*, wait: bool = True) -> LocalServerStatus:
     if result.returncode != 0:
         raise RuntimeError((result.stderr or result.stdout or "compose up failed")[-500:])
     _repair_network()
-    if wait and not wait_for_system_up(DEFAULT_LOCAL_URL):
-        recovery = _recover_failed_start()
-        if not recovery or not wait_for_system_up(DEFAULT_LOCAL_URL, timeout_s=300.0):
-            raise RuntimeError(
-                f"local SonarQube did not become UP at {DEFAULT_LOCAL_URL}"
-                + (f" (after: {recovery})" if recovery else "")
-                + f"; see: docker logs {SQ_CONTAINER}"
-            )
-        print(f"NOTE: local SonarQube recovered: {recovery}", flush=True)
     if wait:
+        _wait_up_or_recover()
         require_own_server()
+    _ensure_cxx_soft()
+    _pull_aux_images_soft()
+    return status()
+
+
+def _ensure_cxx_soft() -> None:
     # Community C/C++ via SonarOpenCommunity/sonar-cxx (optional; default on).
     try:
         from sonar_cxx_plugin import ensure_cxx_plugin, install_sonar_cxx_enabled
@@ -551,13 +580,6 @@ def start(*, wait: bool = True) -> LocalServerStatus:
                 print(f"NOTE: sonar-cxx install: {cxx.detail}", flush=True)
     except Exception as exc:  # noqa: BLE001 — never block local-up on plugin issues
         print(f"NOTE: sonar-cxx install skipped: {exc}", flush=True)
-    try:
-        failed = pull_aux_images()
-        if failed:
-            print(f"NOTE: could not pull {', '.join(failed)}", flush=True)
-    except Exception as exc:  # noqa: BLE001 — scans pull again on demand
-        print(f"NOTE: image pull skipped: {exc}", flush=True)
-    return status()
 
 
 def stop(*, remove: bool = False) -> LocalServerStatus:
