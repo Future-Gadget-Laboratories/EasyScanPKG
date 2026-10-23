@@ -19,6 +19,7 @@ from pathlib import Path
 from docker_util import run_docker
 from env_write import LOCAL_ENV, read_env_file, update_local_credentials
 from server_health import AuthStatus, check_server, wait_for_system_up
+from sonar_runtime import compose_env, native_run_args, resolve_memory, restart_policy
 from safe_io import urlopen as safe_urlopen
 
 DEFAULT_LOCAL_URL = "http://127.0.0.1:9000"
@@ -188,7 +189,7 @@ def _native_up() -> subprocess.CompletedProcess[str]:
             "--network",
             NETWORK_NAME,
             "--restart",
-            "unless-stopped",
+            restart_policy(),
             "-e",
             "POSTGRES_USER=sonar",
             "-e",
@@ -221,7 +222,8 @@ def _native_up() -> subprocess.CompletedProcess[str]:
             "--add-host",
             f"{SQ_HOSTNAME}:127.0.0.1",
             "--restart",
-            "unless-stopped",
+            restart_policy(),
+            *native_run_args(resolve_memory()),
             "-p",
             "127.0.0.1:9000:9000",
             "-e",
@@ -291,9 +293,10 @@ def _run_compose(*args: str) -> subprocess.CompletedProcess[str]:
         if args == ("stop",):
             return _native_stop()
         raise
+    env = {**os.environ, **compose_env(resolve_memory())}
     if cmd[0] == shutil.which("docker") or cmd[0] == "docker":
-        return run_docker(cmd[1:])
-    result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+        return run_docker(cmd[1:], env=env)
+    result = subprocess.run(cmd, capture_output=True, text=True, check=False, env=env)
     if result.returncode == 0:
         return result
     from docker_util import _in_docker_group, _shell_quote
@@ -306,6 +309,7 @@ def _run_compose(*args: str) -> subprocess.CompletedProcess[str]:
         capture_output=True,
         text=True,
         check=False,
+        env=env,
     )
 
 def _http_system_status(url: str = DEFAULT_LOCAL_URL) -> dict | None:
@@ -709,6 +713,11 @@ def admin_login() -> dict[str, str]:
     }
 
 
+def _is_loopback_url(url: str) -> bool:
+    host = (urllib.parse.urlsplit(url).hostname or "").lower()
+    return host in {"127.0.0.1", "localhost", "::1"}
+
+
 def ensure_token(*, project_key: str | None = None) -> str:
     local = read_env_file(LOCAL_ENV)
     cached = local.get("SONARQUBE_TOKEN")
@@ -716,6 +725,9 @@ def ensure_token(*, project_key: str | None = None) -> str:
     if cached:
         health = check_server(local_url, cached)
         if health.status == AuthStatus.OK:
+            if _is_loopback_url(local_url):
+                # A token that still works is not proof the right server answers.
+                require_own_server(local_url)
             return cached
 
     if not is_running():

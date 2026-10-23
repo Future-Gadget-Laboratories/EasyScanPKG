@@ -71,21 +71,24 @@ def run_docker(
     *,
     check: bool = False,
     timeout: float | None = None,
+    env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """Run docker; retry via sg docker when user is in group but session is stale.
 
     The child inherits this process environment, so secrets are passed as bare
     ``-e NAME`` flags and never appear in argv (``ps``). ``sg`` keeps the
-    environment as well.
+    environment as well. ``env`` replaces the inherited environment when set.
     """
     cmd = ["docker", *args]
-    result = subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=timeout)
+    result = subprocess.run(
+        cmd, capture_output=True, text=True, check=False, timeout=timeout, env=env
+    )
     if result.returncode == 0:
         return result
     if _permission_denied(result) and _in_docker_group() and shutil.which("sg"):
         sg_cmd = ["sg", "docker", "-c", " ".join(_shell_quote(["docker", *args]))]
         result = subprocess.run(
-            sg_cmd, capture_output=True, text=True, check=False, timeout=timeout
+            sg_cmd, capture_output=True, text=True, check=False, timeout=timeout, env=env
         )
     if check and result.returncode != 0:
         raise subprocess.CalledProcessError(

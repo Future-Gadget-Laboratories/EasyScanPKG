@@ -1,5 +1,10 @@
 # Local SonarQube Server fallback stack (Community + PostgreSQL)
 # Data persists under ~/.config/sft/sonar-local/volumes/
+#
+# Memory and restart policy come from SFT_SQ_* variables that sonar-local-up
+# derives from SFT_SONAR_MEM_PROFILE / SFT_SONAR_MEM_LIMIT / SFT_SONAR_AUTOSTART
+# (lib/sonar_runtime.py). The defaults below equal the "low" profile with
+# autostart on, so a plain `docker compose up` gets the same caps.
 services:
   sonarqube-db:
     image: postgres:16-alpine
@@ -15,7 +20,7 @@ services:
       interval: 10s
       timeout: 5s
       retries: 10
-    restart: unless-stopped
+    restart: "${SFT_SQ_RESTART:-unless-stopped}"
 
   sonarqube:
     image: sonarqube:community
@@ -34,11 +39,16 @@ services:
       SONAR_JDBC_URL: jdbc:postgresql://sonarqube-db:5432/sonar
       SONAR_JDBC_USERNAME: sonar
       SONAR_JDBC_PASSWORD: sonar
+      SONAR_WEB_JAVAOPTS: "${SFT_SQ_WEB_JAVAOPTS:--Xmx512m -Xms128m}"
+      SONAR_CE_JAVAOPTS: "${SFT_SQ_CE_JAVAOPTS:--Xmx640m -Xms128m}"
+      SONAR_SEARCH_JAVAOPTS: "${SFT_SQ_SEARCH_JAVAOPTS:--Xmx512m -Xms512m}"
+    mem_limit: "${SFT_SQ_MEM_LIMIT:-2560m}"
+    memswap_limit: "${SFT_SQ_MEMSWAP_LIMIT:-2560m}"
     volumes:
       - sonarqube_data:/opt/sonarqube/data
       - sonarqube_extensions:/opt/sonarqube/extensions
       - sonarqube_logs:/opt/sonarqube/logs
-    restart: unless-stopped
+    restart: "${SFT_SQ_RESTART:-unless-stopped}"
 
 volumes:
   sonarqube_db:

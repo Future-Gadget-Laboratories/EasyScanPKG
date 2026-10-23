@@ -44,6 +44,11 @@ Standard dev commands are documented in `README.md` and `CONTRIBUTING.md`:
   (keeps containers; `--remove` deletes them, volumes are always kept).
   The cxx plugin is chosen from the `sft-sonarqube` container's own version; if
   another server answers on :9000, `sonar-local-up` refuses to start.
+  Memory is capped by `SFT_SONAR_MEM_PROFILE` (default `low`, for 8 GB hosts)
+  or `SFT_SONAR_MEM_LIMIT`; `SFT_SONAR_AUTOSTART=0` creates the containers with
+  `restart: "no"`; `SFT_SONAR_ON_DEMAND=1` makes `easyscan-scan` and
+  `easyscan-check --require-local` start the stack and stop it after the last
+  lease (stop only). See README "Memory, autostart and on-demand mode".
 
 - **Dogfood / self-scan:** stock `sonar-scan` exclusions hide `**/bin/**`. When
   scanning EasyScanPKG itself use:

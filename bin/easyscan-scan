@@ -205,6 +205,37 @@ def main(argv: list[str] | None = None) -> int:
         "types": args.issue_type,
     }
 
+    with _on_demand_lease(args, only=only, disable=disable):
+        return _plan_and_run(args, workspace, scanner_config, context, threshold)
+
+
+def _on_demand_lease(args, *, only, disable):
+    """Hold an on-demand SonarQube lease while a local Sonar scan may run."""
+    import contextlib
+
+    from sonar_lease import lease
+    from sonar_runtime import on_demand_enabled
+
+    disabled = {d.strip() for raw in disable for d in raw.split(",")}
+    uses_sonar = "sonar" not in disabled and (only is None or "sonar" in only)
+    if args.plan or not uses_sonar or not on_demand_enabled() or not _local_sonar(args):
+        return contextlib.nullcontext()
+    return lease("easyscan-scan")
+
+
+def _local_sonar(args) -> bool:
+    """True when the Sonar credentials in use point at this host."""
+    try:
+        from context_resolve import peek_creds
+        from local_server import _is_loopback_url
+
+        url, _token = peek_creds(context=args.context, prefer_local=bool(args.local))
+    except Exception:  # noqa: BLE001 — no credentials yet: the local stack bootstraps them
+        return True
+    return _is_loopback_url(url or "http://127.0.0.1:9000")
+
+
+def _plan_and_run(args, workspace, scanner_config, context, threshold) -> int:
     profile = detect_project(workspace)
     scanner_config, decisions = plan_scanners(
         scanner_config, profile, mode=args.mode, context=context

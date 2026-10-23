@@ -3,6 +3,10 @@
 
 Containers and volumes are kept by default (plain `stop`). Pass --remove to
 remove the containers (`compose down`); volumes are never removed here.
+
+It refuses while on-demand leases are active (a scan is using the server)
+unless --force. --if-idle only reaps stale leases and stops a server that
+on-demand leases started and nobody uses any more (safe from cron).
 """
 
 from __future__ import annotations
@@ -18,6 +22,7 @@ from _bootstrap import bootstrap
 bootstrap()
 
 from local_server import stop  # noqa: E402
+from sonar_lease import active_leases, stop_if_idle  # noqa: E402
 
 
 def main() -> int:
@@ -28,7 +33,25 @@ def main() -> int:
         action="store_true",
         help="also remove the containers (compose down); volumes are kept",
     )
+    parser.add_argument(
+        "--if-idle",
+        action="store_true",
+        help="only stop a server started by on-demand leases once no lease is left",
+    )
+    parser.add_argument("--force", action="store_true", help="stop even while leases are active")
     args = parser.parse_args()
+    if args.if_idle:
+        print(f"on-demand SonarQube: {stop_if_idle()}")
+        return 0
+    leases = active_leases()["leases"]
+    if leases and not args.force:
+        users = ", ".join(sorted({str(v.get("purpose")) for v in leases.values()}))
+        print(
+            f"refusing: {len(leases)} on-demand lease(s) active ({users}); "
+            "use --if-idle, or --force to stop anyway",
+            file=sys.stderr,
+        )
+        return 1
     st = stop(remove=args.remove)
     payload = {"ok": True, "running": st.running, "url": st.url, "removed": args.remove}
     if args.json:

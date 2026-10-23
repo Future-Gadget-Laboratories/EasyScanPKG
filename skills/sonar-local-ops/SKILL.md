@@ -40,9 +40,16 @@ set +a
 ```bash
 "$BRIDGE/bin/sonar-local-up"      # Docker Postgres + SonarQube; bootstraps token (password hidden unless --show-password)
 "$BRIDGE/bin/sonar-local-down"    # stops containers, keeps them; --remove deletes containers (never volumes)
+"$BRIDGE/bin/sonar-local-down" --if-idle   # stop a server on-demand leases started once nobody uses it
+"$BRIDGE/bin/sonar-local-lease" -- CMD     # hold the server for CMD (starts it if down; last user out stops it)
 "$BRIDGE/bin/sonar-desktop"       # up + MCP + open Cursor (daily / after reboot)
 "$BRIDGE/bin/easyscan-check"      # one-click readiness gate
 ```
+
+Memory / lifecycle knobs (env or `~/.config/sft/sonar-runtime.env`):
+`SFT_SONAR_MEM_PROFILE=low|normal|high` (default low), `SFT_SONAR_MEM_LIMIT=3g`,
+`SFT_SONAR_AUTOSTART=0` (restart "no"), `SFT_SONAR_ON_DEMAND=1` (scan/check start
+the stack and stop it after the last lease; containers and volumes are kept).
 
 First boot can take several minutes. UI: http://127.0.0.1:9000  
 Login is **username `admin`** plus the password in `~/.config/sft/sonar-local-admin.json` (or `sonar-local-up --show-password`).

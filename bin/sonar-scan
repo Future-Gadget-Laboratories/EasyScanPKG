@@ -88,7 +88,12 @@ fi
 
 # Ensure local server when pointing at localhost
 if [[ "$SONARQUBE_URL" == *"127.0.0.1"* ]] || [[ "$SONARQUBE_URL" == *"localhost"* ]]; then
-  "$ROOT/bin/sonar-local-up" >/dev/null || true
+  # stdout is dropped (it can carry login details); errors stay visible.
+  if ! "$ROOT/bin/sonar-local-up" >/dev/null; then
+    echo "sonar-local-up failed: the local SonarQube is not ours or not healthy; not scanning." >&2
+    echo "Run easyscan-check --require-local for details." >&2
+    exit 1
+  fi
 fi
 
 echo "==> Sonar scan"
@@ -124,7 +129,7 @@ PY
 if docker info >/dev/null 2>&1; then
   DOCKER_VIA_SG=0
 elif command -v sg >/dev/null 2>&1 \
-  && id -nG "$(id -un)" 2>/dev/null | tr ' ' '\n' | grep -qx docker; then
+  && SFT_LIB="$ROOT/lib" python3 -c 'import os, sys; sys.path.insert(0, os.environ["SFT_LIB"]); from docker_util import _in_docker_group; sys.exit(0 if _in_docker_group() else 1)' 2>/dev/null; then
   DOCKER_VIA_SG=1
 else
   DOCKER_VIA_SG=0
@@ -159,6 +164,11 @@ fi
 
 export SONAR_HOST_URL="$SONARQUBE_URL"
 export SONAR_TOKEN="$SONARQUBE_TOKEN"
+# Scanner engine heap follows SFT_SONAR_MEM_PROFILE (low: 1 GB) unless set.
+if [[ -z "${SONAR_SCANNER_JAVA_OPTS:-}" ]]; then
+  SONAR_SCANNER_JAVA_OPTS="$(SFT_LIB="$ROOT/lib" python3 -c 'import os, sys; sys.path.insert(0, os.environ["SFT_LIB"]); from sonar_runtime import scanner_java_opts; print(scanner_java_opts())' 2>/dev/null || echo -Xmx1024m)"
+fi
+export SONAR_SCANNER_JAVA_OPTS
 # --entrypoint sonar-scanner: the image's default entrypoint rewrites
 # SONAR_TOKEN into `-Dsonar.token=<value>` on the JVM command line, which
 # every host user can read via ps. The scanner reads SONAR_TOKEN from its
@@ -167,6 +177,7 @@ _docker run --rm --network=host \
   --entrypoint sonar-scanner \
   -e SONAR_HOST_URL \
   -e SONAR_TOKEN \
+  -e SONAR_SCANNER_JAVA_OPTS \
   -v "$WORKSPACE:/usr/src" \
   -w /usr/src \
   sonarsource/sonar-scanner-cli:latest \

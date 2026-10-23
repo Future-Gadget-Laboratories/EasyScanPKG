@@ -221,7 +221,7 @@ def check_local_env(report: CheckReport, *, require_local: bool) -> None:
     ok = has_url and has_token
     detail = "URL+token present" if ok else "sonar-local.env incomplete (token/url)"
     if ok:
-        ok, detail = _validate_local_token(env_path)
+        ok, detail = _validate_local_token(env_path, require_local=require_local)
     report.add(
         CheckItem(
             "local_env",
@@ -232,7 +232,7 @@ def check_local_env(report: CheckReport, *, require_local: bool) -> None:
     )
 
 
-def _validate_local_token(env_path: Path) -> tuple[bool, str]:
+def _validate_local_token(env_path: Path, *, require_local: bool = False) -> tuple[bool, str]:
     """Check the stored token against the stored URL (never prints the token)."""
     from env_write import read_env_file
     from server_health import AuthStatus, check_server
@@ -244,8 +244,11 @@ def _validate_local_token(env_path: Path) -> tuple[bool, str]:
         return True, "URL+token present; token valid"
     if health.status == AuthStatus.UNAUTHORIZED:
         return False, f"token rejected by {url} — re-run sonar-local-up"
-    # Unreachable: local_server reports the server state.
-    return True, f"URL+token present; token not validated ({health.detail[:80]})"
+    # Unreachable: local_server reports the server state as well.
+    return (
+        not require_local,
+        f"URL+token present; token not validated ({health.detail[:80]})",
+    )
 
 
 def _server_owner_detail() -> tuple[str, str]:
@@ -271,6 +274,12 @@ def check_local_server(report: CheckReport, *, require_local: bool) -> None:
             owner, detail = _server_owner_detail()
             if owner == "foreign":
                 report.add(CheckItem("local_server", False, level, f"wrong server: {detail}"))
+                return
+            if owner != "sft" and require_local:
+                # Without a positive identity, a different SonarQube on :9000 would pass.
+                report.add(
+                    CheckItem("local_server", False, level, f"server not verified: {detail}")
+                )
                 return
             report.add(
                 CheckItem(

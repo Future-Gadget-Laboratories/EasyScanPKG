@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -14,6 +15,7 @@ from _bootstrap import bootstrap
 bootstrap()
 
 from local_server import admin_login, ensure_token, start  # noqa: E402
+from sonar_runtime import PROFILES, describe, resolve_memory  # noqa: E402
 
 
 def main() -> int:
@@ -24,7 +26,32 @@ def main() -> int:
         action="store_true",
         help="print the local admin password (default: only the state file path)",
     )
+    parser.add_argument(
+        "--mem-profile",
+        choices=sorted(PROFILES),
+        help="memory profile (env SFT_SONAR_MEM_PROFILE; default low, for 8 GB hosts)",
+    )
+    parser.add_argument(
+        "--mem-limit",
+        help="container memory cap such as 3g (env SFT_SONAR_MEM_LIMIT); heaps are fitted inside",
+    )
+    parser.add_argument(
+        "--no-autostart",
+        action="store_true",
+        help='create containers with restart: "no" (env SFT_SONAR_AUTOSTART=0)',
+    )
     args = parser.parse_args()
+    if args.mem_profile:
+        os.environ["SFT_SONAR_MEM_PROFILE"] = args.mem_profile
+    if args.mem_limit:
+        os.environ["SFT_SONAR_MEM_LIMIT"] = args.mem_limit
+    if args.no_autostart:
+        os.environ["SFT_SONAR_AUTOSTART"] = "0"
+    try:
+        mem = resolve_memory()
+    except ValueError as exc:
+        parser.error(str(exc))
+    print(f"local SonarQube memory: {describe(mem)}", file=sys.stderr)
     st = start(wait=True)
     token = ensure_token()
     login = admin_login()
