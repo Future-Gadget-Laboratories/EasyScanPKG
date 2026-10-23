@@ -303,6 +303,8 @@ class SecretsNotInArgvTests(unittest.TestCase):
         self.assertNotIn("-e SONAR_TOKEN=$", text)
         self.assertIn("  -e SONAR_TOKEN \\\n", text)
         self.assertIn("_docker run --rm", text)
+        # The image entrypoint would turn SONAR_TOKEN into -Dsonar.token=... (argv).
+        self.assertIn("  --entrypoint sonar-scanner \\\n", text)
 
     def test_sonar_desktop_does_not_use_env_assignment_for_token(self) -> None:
         text = (ROOT / "bin" / "sonar-desktop").read_text(encoding="utf-8")

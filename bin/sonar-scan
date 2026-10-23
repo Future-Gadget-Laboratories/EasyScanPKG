@@ -159,7 +159,12 @@ fi
 
 export SONAR_HOST_URL="$SONARQUBE_URL"
 export SONAR_TOKEN="$SONARQUBE_TOKEN"
+# --entrypoint sonar-scanner: the image's default entrypoint rewrites
+# SONAR_TOKEN into `-Dsonar.token=<value>` on the JVM command line, which
+# every host user can read via ps. The scanner reads SONAR_TOKEN from its
+# environment on its own.
 _docker run --rm --network=host \
+  --entrypoint sonar-scanner \
   -e SONAR_HOST_URL \
   -e SONAR_TOKEN \
   -v "$WORKSPACE:/usr/src" \
