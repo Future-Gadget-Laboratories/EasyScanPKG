@@ -111,9 +111,9 @@ class ServerIdentityTests(unittest.TestCase):
         )
         self.assertEqual(ident.owner, "foreign")
 
-    def test_version_fallback_without_curl(self) -> None:
+    def test_version_match_without_ids_is_unverified(self) -> None:
         ident = self._ident(host={"id": "B", "version": "26.10.0"}, cversion="26.10.0")
-        self.assertEqual(ident.owner, "sft")
+        self.assertEqual(ident.owner, "unknown")
 
     def test_none_and_starting(self) -> None:
         self.assertEqual(self._ident(host=None, running=False).owner, "none")

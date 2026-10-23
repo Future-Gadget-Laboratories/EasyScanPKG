@@ -6,6 +6,7 @@ import grp
 import os
 import pwd
 import shutil
+import shlex
 import subprocess
 
 
@@ -98,12 +99,4 @@ def run_docker(
 
 
 def _shell_quote(parts: list[str]) -> list[str]:
-    out = []
-    for p in parts:
-        if not p:
-            out.append("''")
-        elif any(c in p for c in " \t\n'\"\\$"):
-            out.append("'" + p.replace("'", "'\\''") + "'")
-        else:
-            out.append(p)
-    return out
+    return [shlex.quote(part) for part in parts]

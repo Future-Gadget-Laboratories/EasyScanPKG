@@ -90,11 +90,24 @@ def _default_ops() -> LeaseOps:
     import local_server
 
     return LeaseOps(
-        is_running=local_server.is_running,
-        start=lambda: local_server.start(wait=True),
+        is_running=local_server.lease_running,
+        start=_prepare_local_server,
         stop=lambda: local_server.stop(remove=False),
         wait_ce_idle=wait_ce_idle,
     )
+
+
+def _prepare_local_server() -> None:
+    import local_server
+
+    if not local_server.lease_running():
+        local_server.start(wait=True)
+    else:
+        # A pre-existing server must not be recreated with this caller's knobs.
+        if not local_server.wait_for_system_up(local_server.DEFAULT_LOCAL_URL):
+            raise RuntimeError("local SonarQube did not become UP")
+        local_server.require_own_server()
+    local_server.ensure_token()
 
 
 @contextlib.contextmanager
@@ -148,7 +161,8 @@ def acquire(purpose: str, *, ops: LeaseOps | None = None, pid: int | None = None
     with _locked():
         data = _load()
         _prune(data)
-        if not ops.is_running():
+        running = ops.is_running()
+        if not running:
             data["started_by_lease"] = True
             _save(data)  # even if start() fails half-way, --if-idle may stop it
         # Otherwise the recorded owner stays: false when the server was started
@@ -156,13 +170,11 @@ def acquire(purpose: str, *, ops: LeaseOps | None = None, pid: int | None = None
         # last lease holder crashed before releasing).
         # start() is idempotent: it brings the stack up if needed, waits for UP,
         # and refuses a foreign server on the port.
-        try:
+        # Joining a running server that other leases use must not reconfigure it.
+        # A failed start keeps started_by_lease: it may have left the database
+        # (or a half-started server) running, which --if-idle then stops.
+        if not running or not data["leases"]:
             ops.start()
-        except BaseException:
-            if not data["leases"] and not ops.is_running():
-                data["started_by_lease"] = False  # nothing of ours is left running
-                _save(data)
-            raise
         data["leases"][lease_id] = {
             "pid": pid,
             "proc_start": _proc_start_time(pid),
@@ -188,9 +200,11 @@ def release(lease_id: str | None, *, ops: LeaseOps | None = None) -> str:
         if not data["started_by_lease"]:
             _save(data)
             return "kept running (it was up before the first lease)"
+        _save(data)  # persist the release even if CE polling or Docker fails
         if ops.is_running():
             ops.wait_ce_idle()
-            ops.stop()
+        # A failed start may have left only the database running.
+        ops.stop()
         data["started_by_lease"] = False
         _save(data)
         return "stopped (last lease released; containers and volumes kept)"
@@ -199,6 +213,23 @@ def release(lease_id: str | None, *, ops: LeaseOps | None = None) -> str:
 def stop_if_idle(*, ops: LeaseOps | None = None) -> str:
     """Reap stale leases and stop a lease-started server nobody uses."""
     return release(None, ops=ops)
+
+
+@contextlib.contextmanager
+def stop_guard(*, force: bool = False) -> Iterator[None]:
+    """Serialize the active-lease check and manual stop against acquire."""
+    with _locked():
+        data = _load()
+        _prune(data)
+        _save(data)
+        if data["leases"] and not force:
+            raise RuntimeError(
+                f"refusing: {len(data['leases'])} on-demand lease(s) active; "
+                "use --if-idle, or --force to stop anyway"
+            )
+        yield
+        data["started_by_lease"] = False
+        _save(data)
 
 
 def active_leases() -> dict:
@@ -225,7 +256,11 @@ def lease(purpose: str, *, enabled: bool | None = None) -> Iterator[str | None]:
         yield lease_id
     finally:
         _restore_sigterm(previous)
-        print(f"on-demand SonarQube: {release(lease_id)}", file=sys.stderr, flush=True)
+        try:
+            outcome = release(lease_id)
+        except Exception as exc:  # noqa: BLE001 — never mask the caller's result
+            outcome = f"release incomplete: {exc}"
+        print(f"on-demand SonarQube: {outcome}", file=sys.stderr, flush=True)
 
 
 def _raise_exit(signum, _frame):
@@ -259,12 +294,13 @@ def _ce_activity_status(url: str, token: str) -> tuple[dict | None, bool]:
     return None, True
 
 
-def wait_ce_idle(timeout_s: float = CE_IDLE_TIMEOUT_S, *, poll_s: float = 3.0) -> bool:
-    """Wait until the Compute Engine has no pending/in-progress tasks.
+def wait_ce_idle(timeout_s: float = CE_IDLE_TIMEOUT_S, *, poll_s: float = 3.0) -> None:
+    """Wait until the Compute Engine queue is confirmed empty.
 
-    Stopping mid-task would lose the analysis report a scan just uploaded.
-    Only an explicit empty queue counts as idle; transient API errors are
-    retried until the deadline. Returns True when the queue was seen empty.
+    Stopping mid-task would lose the analysis report a scan just uploaded, so
+    only an explicit zero pending / in-progress counts as idle. Transient API
+    errors are retried until the deadline; a queue that stays busy or cannot be
+    read raises TimeoutError and the caller leaves the server running.
     """
     from env_write import LOCAL_ENV, read_env_file
 
@@ -274,14 +310,17 @@ def wait_ce_idle(timeout_s: float = CE_IDLE_TIMEOUT_S, *, poll_s: float = 3.0) -
     deadline = time.monotonic() + timeout_s
     while True:
         status, retry = _ce_activity_status(url, token)
-        if status is not None and status.get("pending", 0) == 0 and status.get("inProgress", 0) == 0:
-            return True
-        if status is None and not retry:
-            print("on-demand SonarQube: cannot read the CE queue (permission); stopping anyway",
-                  file=sys.stderr, flush=True)
-            return False
-        if time.monotonic() >= deadline:
-            print("on-demand SonarQube: CE queue still busy or unreadable at the deadline; stopping",
-                  file=sys.stderr, flush=True)
-            return False
+        if (
+            status is not None
+            and type(status.get("pending")) is int
+            and type(status.get("inProgress")) is int
+            and status["pending"] == 0
+            and status["inProgress"] == 0
+        ):
+            return
+        if (status is None and not retry) or time.monotonic() >= deadline:
+            raise TimeoutError(
+                "Compute Engine idle state unconfirmed; local SonarQube left running "
+                "(run sonar-local-down --if-idle later)"
+            )
         time.sleep(poll_s)

@@ -17,9 +17,9 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from docker_util import run_docker
-from env_write import LOCAL_ENV, read_env_file, update_local_credentials
+from env_write import LOCAL_ENV, read_env_file, update_local_credentials, write_private
 from server_health import AuthStatus, check_server, wait_for_system_up
-from sonar_runtime import compose_env, native_run_args, resolve_memory, restart_policy
+from sonar_runtime import compose_env, native_run_args, parse_size_mb, resolve_memory, restart_policy
 from safe_io import urlopen as safe_urlopen
 
 DEFAULT_LOCAL_URL = "http://127.0.0.1:9000"
@@ -125,8 +125,12 @@ def _container_running(name: str) -> bool:
 def _ensure_container(name: str, run_args: list[str]) -> None:
     inspect = run_docker(["inspect", "--type", "container", name])
     if inspect.returncode == 0:
-        _start_existing_container(name)
-        return
+        spec = json.loads(inspect.stdout)[0]
+        if _native_configuration_matches(spec, run_args):
+            _start_existing_container(name)
+            return
+        # Keep named volumes when applying changed memory/heaps/restart policy.
+        run_docker(["rm", "-f", name], check=True)
     result = run_docker(["run", "-d", "--name", name, *run_args])
     if result.returncode == 0:
         return
@@ -135,6 +139,37 @@ def _ensure_container(name: str, run_args: list[str]) -> None:
         _recover_name_conflict(name)
         return
     raise RuntimeError(err[-500:])
+
+
+def _native_configuration_matches(spec: dict, args: list[str]) -> bool:
+    host = spec.get("HostConfig", {})
+    if host.get("RestartPolicy", {}).get("Name") != args[args.index("--restart") + 1]:
+        return False
+    for flag, key in (("--memory", "Memory"), ("--memory-swap", "MemorySwap")):
+        if flag in args:
+            expected = parse_size_mb(args[args.index(flag) + 1]) * 1024 * 1024
+            if host.get(key) != expected:
+                return False
+    current_env = set(spec.get("Config", {}).get("Env") or [])
+    for index, arg in enumerate(args[:-1]):
+        if arg == "-e" and args[index + 1].startswith(
+            ("SONAR_WEB_JAVAOPTS=", "SONAR_CE_JAVAOPTS=", "SONAR_SEARCH_JAVAOPTS=")
+        ) and args[index + 1] not in current_env:
+            return False
+    return True
+
+
+def lease_running(name: str = SQ_CONTAINER) -> bool:
+    """Container state for leases: daemon failures must not mean 'stopped'."""
+    result = run_docker(
+        ["inspect", "--type", "container", "-f", "{{.State.Running}}", name]
+    )
+    if result.returncode == 0 and result.stdout.strip().lower() in {"true", "false"}:
+        return result.stdout.strip().lower() == "true"
+    error = (result.stderr or "").lower()
+    if "no such object" in error or "no such container" in error:
+        return False
+    raise RuntimeError("cannot determine local SonarQube state; keeping lease ownership")
 
 
 def _start_existing_container(name: str) -> None:
@@ -254,7 +289,7 @@ def _native_down() -> subprocess.CompletedProcess[str]:
 def _native_stop() -> subprocess.CompletedProcess[str]:
     """Stop both containers without removing them."""
     for name in (SQ_CONTAINER, DB_CONTAINER):
-        if _container_running(name):
+        if lease_running(name):
             result = run_docker(["stop", name])
             if result.returncode != 0:
                 return result
@@ -293,7 +328,9 @@ def _run_compose(*args: str) -> subprocess.CompletedProcess[str]:
         if args == ("stop",):
             return _native_stop()
         raise
-    env = {**os.environ, **compose_env(resolve_memory())}
+    env = dict(os.environ)
+    if args == ("up", "-d"):
+        env.update(compose_env(resolve_memory()))
     if cmd[0] == shutil.which("docker") or cmd[0] == "docker":
         return run_docker(cmd[1:], env=env)
     result = subprocess.run(cmd, capture_output=True, text=True, check=False, env=env)
@@ -406,21 +443,12 @@ def _identity_of_answering_server(url: str, host: dict) -> ServerIdentity:
             host_version=host_version,
             container_version=inner_version,
         )
-    # curl unavailable in the image: fall back to comparing versions.
-    container_version = container_server_version()
-    if container_version and container_version == host_version:
-        return ServerIdentity(
-            "sft",
-            f"{SQ_CONTAINER} {container_version} answers {url} (version match)",
-            host_version=host_version,
-            container_version=container_version,
-        )
+    # Equal software versions do not identify a server.
     return ServerIdentity(
-        "foreign",
-        f"{url} reports SonarQube {host_version or '?'} but {SQ_CONTAINER} is "
-        f"{container_version or 'unknown'}",
+        "unknown",
+        f"cannot compare server IDs for {url} and {SQ_CONTAINER}",
         host_version=host_version,
-        container_version=container_version,
+        container_version=container_server_version(),
     )
 
 
@@ -608,6 +636,8 @@ def _api(
     query: dict | None = None,
     form: dict | None = None,
 ) -> tuple[int, str]:
+    if user is not None:
+        require_own_server()
     url = DEFAULT_LOCAL_URL.rstrip("/") + path
     data: bytes | None = None
     if form is not None:
@@ -653,8 +683,7 @@ def _load_admin_state() -> dict:
 
 def _save_admin_state(data: dict) -> None:
     ADMIN_STATE.parent.mkdir(parents=True, exist_ok=True)
-    ADMIN_STATE.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
-    os.chmod(ADMIN_STATE, 0o600)
+    write_private(ADMIN_STATE, json.dumps(data, indent=2) + "\n")
 
 
 def _generate_admin_password() -> str:
@@ -723,11 +752,13 @@ def ensure_token(*, project_key: str | None = None) -> str:
     cached = local.get("SONARQUBE_TOKEN")
     local_url = local.get("SONARQUBE_URL", DEFAULT_LOCAL_URL)
     if cached:
+        if _is_loopback_url(local_url):
+            if not is_running():
+                start(wait=True)
+            # Check ownership before sending even a cached credential.
+            require_own_server(local_url)
         health = check_server(local_url, cached)
         if health.status == AuthStatus.OK:
-            if _is_loopback_url(local_url):
-                # A token that still works is not proof the right server answers.
-                require_own_server(local_url)
             return cached
 
     if not is_running():
@@ -744,7 +775,7 @@ def ensure_token(*, project_key: str | None = None) -> str:
         query={"name": "sft-agent-bridge"},
     )
     if code != 200:
-        raise RuntimeError(f"token generation failed: HTTP {code} {body[:200]}")
+        raise RuntimeError(f"token generation failed: HTTP {code}")
     token = json.loads(body).get("token")
     if not token:
         raise RuntimeError("token generation returned no token")

@@ -22,7 +22,7 @@ from _bootstrap import bootstrap
 bootstrap()
 
 from local_server import stop  # noqa: E402
-from sonar_lease import active_leases, stop_if_idle  # noqa: E402
+from sonar_lease import stop_guard, stop_if_idle  # noqa: E402
 
 
 def main() -> int:
@@ -43,16 +43,12 @@ def main() -> int:
     if args.if_idle:
         print(f"on-demand SonarQube: {stop_if_idle()}")
         return 0
-    leases = active_leases()["leases"]
-    if leases and not args.force:
-        users = ", ".join(sorted({str(v.get("purpose")) for v in leases.values()}))
-        print(
-            f"refusing: {len(leases)} on-demand lease(s) active ({users}); "
-            "use --if-idle, or --force to stop anyway",
-            file=sys.stderr,
-        )
+    try:
+        with stop_guard(force=args.force):
+            st = stop(remove=args.remove)
+    except RuntimeError as exc:
+        print(str(exc), file=sys.stderr)
         return 1
-    st = stop(remove=args.remove)
     payload = {"ok": True, "running": st.running, "url": st.url, "removed": args.remove}
     if args.json:
         print(json.dumps(payload, indent=2))

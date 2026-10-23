@@ -89,7 +89,7 @@ fi
 # Ensure local server when pointing at localhost
 if [[ "$SONARQUBE_URL" == *"127.0.0.1"* ]] || [[ "$SONARQUBE_URL" == *"localhost"* ]]; then
   # stdout is dropped (it can carry login details); errors stay visible.
-  if ! "$ROOT/bin/sonar-local-up" >/dev/null; then
+  if ! "$ROOT/bin/sonar-local-up" --reuse-running >/dev/null; then
     echo "sonar-local-up failed: the local SonarQube is not ours or not healthy; not scanning." >&2
     echo "Run easyscan-check --require-local for details." >&2
     exit 1
@@ -104,11 +104,11 @@ echo "    sources=$SOURCES"
 echo "    exclusions=$EXCLUSIONS"
 
 # Create project if missing (ignore errors)
-python3 - <<PY || true
+SFT_PROJECT_KEY="$PROJECT_KEY" python3 - <<'PY' || true
 import os, urllib.parse, urllib.request, base64
 url = os.environ["SONARQUBE_URL"].rstrip("/")
 token = os.environ["SONARQUBE_TOKEN"]
-key = "${PROJECT_KEY}"
+key = os.environ["SFT_PROJECT_KEY"]
 auth = base64.b64encode(f"{token}:".encode()).decode()
 req = urllib.request.Request(
     f"{url}/api/projects/create?" + urllib.parse.urlencode({"project": key, "name": key}),
@@ -136,7 +136,7 @@ else
 fi
 _docker() {
   if [[ "$DOCKER_VIA_SG" == 1 ]]; then
-    sg docker -c "$(printf '%q ' docker "$@")"
+    sg docker -c "$(python3 -c 'import shlex, sys; print(shlex.join(["docker", *sys.argv[1:]]))' "$@")"
   else
     docker "$@"
   fi
@@ -185,11 +185,11 @@ _docker run --rm --network=host \
 
 echo ""
 echo "==> Waiting for server to process analysis"
-python3 - <<PY
+SFT_PROJECT_KEY="$PROJECT_KEY" python3 - <<'PY'
 import json, os, time, urllib.parse, urllib.request, base64
 url = os.environ["SONARQUBE_URL"].rstrip("/")
 token = os.environ["SONARQUBE_TOKEN"]
-key = "${PROJECT_KEY}"
+key = os.environ["SFT_PROJECT_KEY"]
 auth = base64.b64encode(f"{token}:".encode()).decode()
 
 def get(path: str):

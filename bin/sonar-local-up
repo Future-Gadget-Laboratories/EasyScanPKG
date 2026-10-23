@@ -14,13 +14,26 @@ from _bootstrap import bootstrap
 
 bootstrap()
 
-from local_server import admin_login, ensure_token, start  # noqa: E402
+from local_server import (  # noqa: E402
+    DEFAULT_LOCAL_URL,
+    admin_login,
+    ensure_token,
+    lease_running,
+    require_own_server,
+    start,
+    status,
+    wait_for_system_up,
+)
 from sonar_runtime import PROFILES, describe, resolve_memory  # noqa: E402
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--json", action="store_true")
+    parser.add_argument(
+        "--reuse-running", action="store_true",
+        help="verify an existing running server without recreating it",
+    )
     parser.add_argument(
         "--show-password",
         action="store_true",
@@ -52,7 +65,13 @@ def main() -> int:
     except ValueError as exc:
         parser.error(str(exc))
     print(f"local SonarQube memory: {describe(mem)}", file=sys.stderr)
-    st = start(wait=True)
+    if args.reuse_running and lease_running():
+        if not wait_for_system_up(DEFAULT_LOCAL_URL):
+            raise RuntimeError("local SonarQube did not become UP")
+        require_own_server()
+        st = status()
+    else:
+        st = start(wait=True)
     token = ensure_token()
     login = admin_login()
     payload = {

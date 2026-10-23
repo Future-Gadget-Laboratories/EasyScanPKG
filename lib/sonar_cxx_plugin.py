@@ -428,6 +428,9 @@ def bootstrap_cxx_quality_profile(
 
 
 def _configure_cxx_runtime(url: str, token: str, *, bootstrap_profile: bool) -> str | None:
+    from local_server import require_own_server
+
+    require_own_server(url)
     configure_cxx_file_suffixes(url, token)
     if bootstrap_profile:
         return bootstrap_cxx_quality_profile(url, token)
@@ -445,7 +448,7 @@ def _target_server_version(url: str) -> tuple[str | None, str | None]:
     from local_server import container_server_version, server_identity  # lazy: import cycle
 
     ident = server_identity(url)
-    if ident.owner == "foreign":
+    if ident.owner != "sft":
         return None, f"refusing cxx install: {ident.detail}"
     version = ident.container_version or container_server_version() or None
     if version is None and ident.owner == "sft":

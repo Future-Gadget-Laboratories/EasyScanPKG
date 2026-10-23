@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import re
+import tempfile
 from pathlib import Path
 
 CONFIG_DIR = Path.home() / ".config" / "sft"
@@ -24,6 +25,22 @@ def read_env_file(path: Path) -> dict[str, str]:
     return out
 
 
+def write_private(path: Path, text: str) -> None:
+    """Publish a complete credential file, private from its first byte."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", dir=path.parent, delete=False
+        ) as stream:
+            tmp = Path(stream.name)
+            stream.write(text)
+        os.replace(tmp, path)
+    finally:
+        if tmp is not None:
+            tmp.unlink(missing_ok=True)
+
+
 def write_env_file(path: Path, values: dict[str, str], header: str | None = None) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     existing = read_env_file(path) if path.is_file() else {}
@@ -37,8 +54,7 @@ def write_env_file(path: Path, values: dict[str, str], header: str | None = None
             lines.append(f"{key}=")
         else:
             lines.append(f"{key}={merged[key]}")
-    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    os.chmod(path, 0o600)
+    write_private(path, "\n".join(lines) + "\n")
 
 
 def update_remote_credentials(url: str | None = None, token: str | None = None, **extra: str) -> Path:
