@@ -27,9 +27,9 @@ from safe_io import urlopen as safe_urlopen
 DEFAULT_LOCAL_URL = "http://127.0.0.1:9000"
 SQ_CONTAINER = "sft-sonarqube"
 
-# Default pin: cxx-2.3.0 tested against Community Build 25.8 / 26.1 (Java 21).
-DEFAULT_CXX_TAG = "cxx-2.3.0"
-DEFAULT_CXX_JAR = "sonar-cxx-plugin-2.3.0.1496.jar"
+# Default pin: cxx-2.3.1 verified against Community Build 26.10 (Java 21).
+DEFAULT_CXX_TAG = "cxx-2.3.1"
+DEFAULT_CXX_JAR = "sonar-cxx-plugin-2.3.1.1656.jar"
 DEFAULT_CXX_URL = (
     f"https://github.com/SonarOpenCommunity/sonar-cxx/releases/download/"
     f"{DEFAULT_CXX_TAG}/{DEFAULT_CXX_JAR}"
@@ -40,7 +40,7 @@ SETTING_CXX_FILE_SUFFIXES = "sonar.cxx.file.suffixes"
 # Falls back to DEFAULT_CXX_TAG when no entry matches.
 COMPATIBILITY: list[tuple[str, str]] = [
     ("26.", DEFAULT_CXX_TAG),
-    ("25.8", DEFAULT_CXX_TAG),
+    ("25.8", "cxx-2.3.0"),
     ("25.", "cxx-2.2.1"),
     ("24.", "cxx-2.1.1"),
     ("10.", "cxx-2.1.1"),
@@ -231,6 +231,17 @@ def _restart_sonarqube(*, wait: bool = True) -> None:
         raise RuntimeError(
             f"local SonarQube did not become UP after cxx plugin install at {DEFAULT_LOCAL_URL}"
         )
+
+
+def _rollback_plugin() -> bool:
+    """Move the cxx JAR(s) out of the plugins dir and bring the server back UP."""
+    from local_server import _disable_cxx_plugins_in_volume  # lazy: avoid import cycle
+
+    if not _disable_cxx_plugins_in_volume():
+        return False
+    if run_docker(["restart", SQ_CONTAINER], timeout=120).returncode != 0:
+        return False
+    return wait_for_system_up(DEFAULT_LOCAL_URL, timeout_s=300.0)
 
 
 def language_has_cxx(url: str, token: str | None = None) -> bool:
@@ -433,12 +444,24 @@ def ensure_cxx_plugin(
     if not install_sonar_cxx_enabled() and not force:
         return CxxInstallResult(ok=True, detail="skipped (SFT_INSTALL_SONAR_CXX disabled)")
 
-    from local_server import is_running  # lazy: avoid import cycle
+    from local_server import (  # lazy: avoid import cycle
+        container_server_version,
+        is_running,
+        server_identity,
+    )
 
     if not is_running():
         return CxxInstallResult(ok=False, detail="local SonarQube container not running")
 
-    version = fetch_server_version(url)
+    # The plugin goes into OUR container, so pick it for OUR container's version.
+    # Asking whatever answers the URL picked a 9.x plugin for a 26.x container
+    # when another server held port 9000, which crash-looped the container.
+    ident = server_identity(url)
+    if ident.owner == "foreign":
+        return CxxInstallResult(ok=False, detail=f"refusing cxx install: {ident.detail}")
+    version = ident.container_version or container_server_version() or None
+    if version is None and ident.owner == "sft":
+        version = fetch_server_version(url)
     try:
         plugin_url, jar_name, tag = resolve_plugin_url(version)
     except (OSError, RuntimeError, ValueError) as exc:
@@ -477,7 +500,20 @@ def ensure_cxx_plugin(
         _remove_old_cxx_plugins(keep=jar_name)
         if not already or force:
             _docker_cp_into_plugins(local_jar)
-            _restart_sonarqube(wait=True)
+            try:
+                _restart_sonarqube(wait=True)
+            except RuntimeError as exc:
+                rolled_back = _rollback_plugin()
+                return CxxInstallResult(
+                    ok=False,
+                    detail=(
+                        f"{jar_name} broke server startup ({exc}); "
+                        + ("plugin disabled, server back UP" if rolled_back else "rollback failed")
+                    ),
+                    jar_name=jar_name,
+                    tag=tag,
+                    restarted=True,
+                )
             restarted = True
         token = _admin_token()
         profile = _configure_cxx_runtime(url, token, bootstrap_profile=bootstrap_profile)

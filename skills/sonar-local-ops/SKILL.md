@@ -38,14 +38,18 @@ set +a
 ## 1. Start / stop the server
 
 ```bash
-"$BRIDGE/bin/sonar-local-up"      # Docker Postgres + SonarQube; bootstraps token + prints UI admin login
-"$BRIDGE/bin/sonar-local-down"
+"$BRIDGE/bin/sonar-local-up"      # Docker Postgres + SonarQube; bootstraps token (password hidden unless --show-password)
+"$BRIDGE/bin/sonar-local-down"    # stops containers, keeps them; --remove deletes containers (never volumes)
 "$BRIDGE/bin/sonar-desktop"       # up + MCP + open Cursor (daily / after reboot)
 "$BRIDGE/bin/easyscan-check"      # one-click readiness gate
 ```
 
 First boot can take several minutes. UI: http://127.0.0.1:9000  
-Login is **username `admin`** plus the password printed by `sonar-local-up` (also in `~/.config/sft/sonar-local-admin.json`).
+Login is **username `admin`** plus the password in `~/.config/sft/sonar-local-admin.json` (or `sonar-local-up --show-password`).
+
+If another SonarQube already answers on :9000, `sonar-local-up` refuses to start and
+`easyscan-check` fails `local_server` naming that server. Stop it first; never bootstrap
+credentials against it.
 
 ## 2. Access token for API / scanner / MCP / agent skills
 

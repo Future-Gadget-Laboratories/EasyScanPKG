@@ -58,12 +58,18 @@ Local stack helpers:
 
 ```bash
 ./bin/sonar-local-up      # SonarQube Community + Postgres on :9000
-./bin/sonar-local-down    # stop containers
+./bin/sonar-local-down    # stop containers (kept; add --remove to delete them, volumes stay)
 ```
 
+If port 9000 is already served by another SonarQube, `sonar-local-up` refuses to
+start (and never sets passwords or mints tokens on a server it does not own);
+`easyscan-check` reports the foreign server. Stop the other server first.
+When your user is in group `docker` but the current login session predates it,
+the tools run docker through `sg docker` automatically; no relogin is needed.
+
 `sonar-local-up` mints a local admin token into `~/.config/sft/sonar-local.env`
-and prints the admin password (also stored in
-`~/.config/sft/sonar-local-admin.json`). By default it also installs the
+and stores the admin password in `~/.config/sft/sonar-local-admin.json`
+(printed only with `--show-password`). By default it also installs the
 [sonar-cxx](https://github.com/SonarOpenCommunity/sonar-cxx) plugin for Community
 C/C++ (`cxx` language key). Disable with `SFT_INSTALL_SONAR_CXX=0`.
 

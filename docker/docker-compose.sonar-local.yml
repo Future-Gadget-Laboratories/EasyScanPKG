@@ -20,6 +20,11 @@ services:
   sonarqube:
     image: sonarqube:community
     container_name: sft-sonarqube
+    # Fixed hostname that always resolves inside the container: the embedded
+    # Elasticsearch aborts with UnknownHostException when it cannot resolve it.
+    hostname: sft-sonarqube
+    extra_hosts:
+      - "sft-sonarqube:127.0.0.1"
     depends_on:
       sonarqube-db:
         condition: service_healthy

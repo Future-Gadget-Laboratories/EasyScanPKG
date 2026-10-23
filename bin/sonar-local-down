@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Stop local SonarQube Docker fallback server."""
+"""Stop local SonarQube Docker fallback server.
+
+Containers and volumes are kept by default (plain `stop`). Pass --remove to
+remove the containers (`compose down`); volumes are never removed here.
+"""
 
 from __future__ import annotations
 
@@ -19,13 +23,18 @@ from local_server import stop  # noqa: E402
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--json", action="store_true")
+    parser.add_argument(
+        "--remove",
+        action="store_true",
+        help="also remove the containers (compose down); volumes are kept",
+    )
     args = parser.parse_args()
-    st = stop()
-    payload = {"ok": True, "running": st.running, "url": st.url}
+    st = stop(remove=args.remove)
+    payload = {"ok": True, "running": st.running, "url": st.url, "removed": args.remove}
     if args.json:
         print(json.dumps(payload, indent=2))
     else:
-        print("local SonarQube stopped")
+        print("local SonarQube containers removed" if args.remove else "local SonarQube stopped")
     return 0
 
 

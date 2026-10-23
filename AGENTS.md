@@ -40,7 +40,10 @@ Standard dev commands are documented in `README.md` and `CONTRIBUTING.md`:
   **SonarOpenCommunity/sonar-cxx** plugin JAR into the extensions volume for
   Community C/C++ support (`cxx` language key — not commercial CFamily). Disable
   with `SFT_INSTALL_SONAR_CXX=0`. First boot + first cxx install can take several
-  minutes (JAR download + Sonar restart). Stop with `./bin/sonar-local-down`.
+  minutes (JAR download + Sonar restart). Stop with `./bin/sonar-local-down`
+  (keeps containers; `--remove` deletes them, volumes are always kept).
+  The cxx plugin is chosen from the `sft-sonarqube` container's own version; if
+  another server answers on :9000, `sonar-local-up` refuses to start.
 
 - **Dogfood / self-scan:** stock `sonar-scan` exclusions hide `**/bin/**`. When
   scanning EasyScanPKG itself use:
@@ -55,8 +58,8 @@ Standard dev commands are documented in `README.md` and `CONTRIBUTING.md`:
   `http://127.0.0.1:9000`, and auto-mints an admin token into
   `~/.config/sft/sonar-local.env`. First boot takes ~40s after images are pulled.
   Stop with `./bin/sonar-local-down`. The generated local admin password is
-  stored in `~/.config/sft/sonar-local-admin.json` and **printed by
-  `./bin/sonar-local-up`** (username `admin`) after bootstrap.
+  stored in `~/.config/sft/sonar-local-admin.json` (username `admin`); it is
+  printed only with `./bin/sonar-local-up --show-password`.
 
 - **Docker images** (`sonarqube:community`, `postgres:16-alpine`,
   `sonarsource/sonar-scanner-cli`, `sonarsource/sonarqube-mcp`) are pulled at

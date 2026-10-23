@@ -117,7 +117,27 @@ except Exception as exc:
     print(f"    project ensure: {exc}")
 PY
 
-docker pull sonarsource/sonar-scanner-cli:latest >/dev/null || true
+# docker, or `sg docker` when the user is a configured member of group docker
+# but this login session predates it (no newgrp / relogin needed). The child
+# inherits the environment either way, so secrets travel as bare `-e NAME`
+# flags and never appear in argv (visible to every user via ps).
+if docker info >/dev/null 2>&1; then
+  DOCKER_VIA_SG=0
+elif command -v sg >/dev/null 2>&1 \
+  && id -nG "$(id -un)" 2>/dev/null | tr ' ' '\n' | grep -qx docker; then
+  DOCKER_VIA_SG=1
+else
+  DOCKER_VIA_SG=0
+fi
+_docker() {
+  if [[ "$DOCKER_VIA_SG" == 1 ]]; then
+    sg docker -c "$(printf '%q ' docker "$@")"
+  else
+    docker "$@"
+  fi
+}
+
+_docker pull sonarsource/sonar-scanner-cli:latest >/dev/null || true
 
 SCANNER_ARGS=(
   -Dsonar.projectKey="$PROJECT_KEY"
@@ -137,9 +157,11 @@ if [[ -n "$COMPILE_COMMANDS" ]]; then
   echo "    cfamily compile-commands=$COMPILE_COMMANDS"
 fi
 
-docker run --rm --network=host \
-  -e SONAR_HOST_URL="$SONARQUBE_URL" \
-  -e SONAR_TOKEN="$SONARQUBE_TOKEN" \
+export SONAR_HOST_URL="$SONARQUBE_URL"
+export SONAR_TOKEN="$SONARQUBE_TOKEN"
+_docker run --rm --network=host \
+  -e SONAR_HOST_URL \
+  -e SONAR_TOKEN \
   -v "$WORKSPACE:/usr/src" \
   -w /usr/src \
   sonarsource/sonar-scanner-cli:latest \

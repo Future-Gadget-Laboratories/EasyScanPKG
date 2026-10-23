@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import re
 import secrets
 import shutil
 import subprocess
@@ -26,12 +27,35 @@ COMPOSE_FILE = Path(__file__).resolve().parents[1] / "docker" / "docker-compose.
 NETWORK_NAME = "sft-sonarqube-net"
 DB_CONTAINER = "sft-sonarqube-db"
 SQ_CONTAINER = "sft-sonarqube"
+# Fixed hostname + matching /etc/hosts entry so the embedded Elasticsearch can
+# always resolve the local host name, even if the container ends up without a
+# network endpoint (seen when port 9000 was held by another server at start).
+SQ_HOSTNAME = "sft-sonarqube"
+SQ_EXTENSIONS_VOLUME = "sft-sonarqube-extensions"
+SQ_IMAGE = "sonarqube:community"
+# Images used after the server is up (scans, MCP helper). Pulled by
+# sonar-local-up so a fresh host does not fail its first scan / check.
+AUX_IMAGES = ("sonarsource/sonar-scanner-cli:latest", "sonarsource/sonarqube-mcp")
 NATIVE_VOLUMES = (
     "sft-sonarqube-db",
     "sft-sonarqube-data",
     "sft-sonarqube-extensions",
     "sft-sonarqube-logs",
 )
+
+
+@dataclass
+class ServerIdentity:
+    """Who answers DEFAULT_LOCAL_URL.
+
+    owner: "sft" (our container), "foreign" (another server/process),
+    "starting" (our container runs but nothing answers yet), "none".
+    """
+
+    owner: str
+    detail: str
+    host_version: str = ""
+    container_version: str = ""
 
 
 @dataclass
@@ -190,6 +214,12 @@ def _native_up() -> subprocess.CompletedProcess[str]:
         [
             "--network",
             NETWORK_NAME,
+            "--network-alias",
+            "sonarqube",
+            "--hostname",
+            SQ_HOSTNAME,
+            "--add-host",
+            f"{SQ_HOSTNAME}:127.0.0.1",
             "--restart",
             "unless-stopped",
             "-p",
@@ -206,15 +236,26 @@ def _native_up() -> subprocess.CompletedProcess[str]:
             "sft-sonarqube-extensions:/opt/sonarqube/extensions",
             "-v",
             "sft-sonarqube-logs:/opt/sonarqube/logs",
-            "sonarqube:community",
+            SQ_IMAGE,
         ],
     )
     return _ok_result()
 
 
 def _native_down() -> subprocess.CompletedProcess[str]:
+    """Remove both containers (volumes are kept). Only used by stop(remove=True)."""
     for name in (SQ_CONTAINER, DB_CONTAINER):
         run_docker(["rm", "-f", name])
+    return _ok_result()
+
+
+def _native_stop() -> subprocess.CompletedProcess[str]:
+    """Stop both containers without removing them."""
+    for name in (SQ_CONTAINER, DB_CONTAINER):
+        if _container_running(name):
+            result = run_docker(["stop", name])
+            if result.returncode != 0:
+                return result
     return _ok_result()
 
 
@@ -247,6 +288,8 @@ def _run_compose(*args: str) -> subprocess.CompletedProcess[str]:
             return _native_up()
         if args == ("down",):
             return _native_down()
+        if args == ("stop",):
+            return _native_stop()
         raise
     if cmd[0] == shutil.which("docker") or cmd[0] == "docker":
         return run_docker(cmd[1:])
@@ -265,12 +308,238 @@ def _run_compose(*args: str) -> subprocess.CompletedProcess[str]:
         check=False,
     )
 
+def _http_system_status(url: str = DEFAULT_LOCAL_URL) -> dict | None:
+    try:
+        with safe_urlopen(f"{url.rstrip('/')}/api/system/status", timeout=5) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _container_system_status() -> dict | None:
+    """/api/system/status as seen from inside our container (bypasses port 9000)."""
+    result = run_docker(
+        [
+            "exec",
+            SQ_CONTAINER,
+            "curl",
+            "-fsS",
+            "-m",
+            "5",
+            "http://127.0.0.1:9000/api/system/status",
+        ],
+        timeout=30,
+    )
+    if result.returncode != 0:
+        return None
+    try:
+        data = json.loads(result.stdout or "")
+    except ValueError:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+_APP_JAR_RE = re.compile(r"sonar-application-(\d+(?:\.\d+)+)\.jar")
+
+
+def container_server_version() -> str:
+    """SonarQube version of our container, read from its lib/ (no HTTP)."""
+    result = run_docker(["exec", SQ_CONTAINER, "ls", "/opt/sonarqube/lib"], timeout=30)
+    if result.returncode != 0:
+        return ""
+    match = _APP_JAR_RE.search(result.stdout or "")
+    return match.group(1) if match else ""
+
+
+def _container_publishes_port() -> bool:
+    result = run_docker(["port", SQ_CONTAINER, "9000/tcp"], timeout=30)
+    return result.returncode == 0 and bool((result.stdout or "").strip())
+
+
+def server_identity(url: str = DEFAULT_LOCAL_URL) -> ServerIdentity:
+    """Decide whether DEFAULT_LOCAL_URL is answered by our sft-sonarqube container."""
+    host = _http_system_status(url)
+    host_version = str((host or {}).get("version") or "")
+    if not is_running():
+        if host is not None:
+            return ServerIdentity(
+                "foreign",
+                f"{url} is answered by SonarQube {host_version or '?'} but container "
+                f"{SQ_CONTAINER} is not running",
+                host_version=host_version,
+            )
+        return ServerIdentity("none", f"{SQ_CONTAINER} not running; nothing answers {url}")
+    if host is None:
+        return ServerIdentity("starting", f"{SQ_CONTAINER} running; {url} not answering yet")
+    if not _container_publishes_port():
+        return ServerIdentity(
+            "foreign",
+            f"{url} is answered by SonarQube {host_version or '?'} while {SQ_CONTAINER} "
+            "has no port 9000 binding (the port was taken when it started)",
+            host_version=host_version,
+        )
+    inner = _container_system_status()
+    if inner is not None:
+        inner_version = str(inner.get("version") or "")
+        if inner.get("id") and inner.get("id") == host.get("id"):
+            return ServerIdentity(
+                "sft",
+                f"{SQ_CONTAINER} {inner_version} answers {url}",
+                host_version=host_version,
+                container_version=inner_version,
+            )
+        return ServerIdentity(
+            "foreign",
+            f"{url} is answered by SonarQube {host_version or '?'} (id {host.get('id')}), "
+            f"not {SQ_CONTAINER} {inner_version or '?'} (id {inner.get('id')})",
+            host_version=host_version,
+            container_version=inner_version,
+        )
+    # curl unavailable in the image: fall back to comparing versions.
+    container_version = container_server_version()
+    if container_version and container_version == host_version:
+        return ServerIdentity(
+            "sft",
+            f"{SQ_CONTAINER} {container_version} answers {url} (version match)",
+            host_version=host_version,
+            container_version=container_version,
+        )
+    return ServerIdentity(
+        "foreign",
+        f"{url} reports SonarQube {host_version or '?'} but {SQ_CONTAINER} is "
+        f"{container_version or 'unknown'}",
+        host_version=host_version,
+        container_version=container_version,
+    )
+
+
+def require_own_server(url: str = DEFAULT_LOCAL_URL) -> ServerIdentity:
+    """Raise unless our container answers url. Guards admin/token bootstrap."""
+    ident = server_identity(url)
+    if ident.owner != "sft":
+        raise RuntimeError(
+            f"refusing to manage {url}: {ident.detail}. Stop the other server holding "
+            "port 9000 (keep its data; e.g. `docker compose stop`) and re-run sonar-local-up."
+        )
+    return ident
+
+
+def _container_networks(name: str) -> dict:
+    result = run_docker(
+        ["inspect", "--type", "container", "-f", "{{json .NetworkSettings.Networks}}", name]
+    )
+    if result.returncode != 0:
+        return {}
+    try:
+        data = json.loads(result.stdout or "null")
+    except ValueError:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _repair_network() -> bool:
+    """Reattach sft-sonarqube to the DB network if it lost its endpoint.
+
+    Returns True when a repair (connect + restart) was performed.
+    """
+    if run_docker(["inspect", "--type", "container", SQ_CONTAINER]).returncode != 0:
+        return False
+    if _container_networks(SQ_CONTAINER):
+        return False
+    db_networks = list(_container_networks(DB_CONTAINER))
+    target = db_networks[0] if db_networks else NETWORK_NAME
+    result = run_docker(
+        ["network", "connect", "--alias", "sonarqube", "--alias", SQ_HOSTNAME, target, SQ_CONTAINER]
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"{SQ_CONTAINER} has no network endpoint and reconnecting to {target} failed: "
+            + (result.stderr or result.stdout or "")[-300:]
+        )
+    run_docker(["restart", SQ_CONTAINER], timeout=120)
+    return True
+
+
+_HOSTNAME_FAILURE = ("UnknownHostException", "Could not determine local host name")
+# Stack frames from the plugin only appear when it threw during startup.
+_CXX_FAILURE = re.compile(r"at org\.sonar\.(?:cxx|plugins\.cxx)\.|CxxRuleRepository")
+
+
+def _disable_cxx_plugins_in_volume() -> bool:
+    """Move sonar-cxx JARs out of the plugins dir (kept under plugins-disabled/)."""
+    result = run_docker(
+        [
+            "run",
+            "--rm",
+            "--user",
+            "0",
+            "--entrypoint",
+            "sh",
+            "-v",
+            f"{SQ_EXTENSIONS_VOLUME}:/ext",
+            SQ_IMAGE,
+            "-c",
+            (
+                "mkdir -p /ext/plugins-disabled && moved=0; "
+                "for f in /ext/plugins/sonar-cxx-plugin-*.jar; do "
+                '[ -e "$f" ] || continue; mv -f "$f" /ext/plugins-disabled/ && moved=1; '
+                'done; [ "$moved" = 1 ]'
+            ),
+        ],
+        timeout=300,
+    )
+    return result.returncode == 0
+
+
+def _recover_failed_start() -> str | None:
+    """Inspect logs of a server that never came UP and fix known causes.
+
+    Returns a short description of the recovery applied, or None.
+    """
+    logs = run_docker(["logs", "--tail", "500", SQ_CONTAINER], timeout=60)
+    text = f"{logs.stdout or ''}{logs.stderr or ''}"
+    if any(marker in text for marker in _HOSTNAME_FAILURE) and _repair_network():
+        return "reattached network endpoint (hostname resolution failure)"
+    if _CXX_FAILURE.search(text) and _disable_cxx_plugins_in_volume():
+        run_docker(["restart", SQ_CONTAINER], timeout=120)
+        return "disabled incompatible sonar-cxx plugin (reinstalled after start)"
+    return None
+
+
+def pull_aux_images() -> list[str]:
+    """Pull scanner/MCP images when missing. Returns images that failed."""
+    failed: list[str] = []
+    for image in AUX_IMAGES:
+        if run_docker(["image", "inspect", image], timeout=60).returncode == 0:
+            continue
+        if run_docker(["pull", image], timeout=900).returncode != 0:
+            failed.append(image)
+    return failed
+
+
 def start(*, wait: bool = True) -> LocalServerStatus:
+    ident = server_identity()
+    if ident.owner == "foreign":
+        raise RuntimeError(
+            f"refusing to start local SonarQube: {ident.detail}. Stop the other server "
+            "holding port 9000 (keep its data; e.g. `docker compose stop`) and retry."
+        )
     result = _run_compose("up", "-d")
     if result.returncode != 0:
         raise RuntimeError((result.stderr or result.stdout or "compose up failed")[-500:])
+    _repair_network()
     if wait and not wait_for_system_up(DEFAULT_LOCAL_URL):
-        raise RuntimeError(f"local SonarQube did not become UP at {DEFAULT_LOCAL_URL}")
+        recovery = _recover_failed_start()
+        if not recovery or not wait_for_system_up(DEFAULT_LOCAL_URL, timeout_s=300.0):
+            raise RuntimeError(
+                f"local SonarQube did not become UP at {DEFAULT_LOCAL_URL}"
+                + (f" (after: {recovery})" if recovery else "")
+                + f"; see: docker logs {SQ_CONTAINER}"
+            )
+        print(f"NOTE: local SonarQube recovered: {recovery}", flush=True)
+    if wait:
+        require_own_server()
     # Community C/C++ via SonarOpenCommunity/sonar-cxx (optional; default on).
     try:
         from sonar_cxx_plugin import ensure_cxx_plugin, install_sonar_cxx_enabled
@@ -282,11 +551,20 @@ def start(*, wait: bool = True) -> LocalServerStatus:
                 print(f"NOTE: sonar-cxx install: {cxx.detail}", flush=True)
     except Exception as exc:  # noqa: BLE001 — never block local-up on plugin issues
         print(f"NOTE: sonar-cxx install skipped: {exc}", flush=True)
+    try:
+        failed = pull_aux_images()
+        if failed:
+            print(f"NOTE: could not pull {', '.join(failed)}", flush=True)
+    except Exception as exc:  # noqa: BLE001 — scans pull again on demand
+        print(f"NOTE: image pull skipped: {exc}", flush=True)
     return status()
 
 
-def stop() -> LocalServerStatus:
-    _run_compose("down")
+def stop(*, remove: bool = False) -> LocalServerStatus:
+    """Stop the stack. Containers are kept unless remove=True (volumes always kept)."""
+    result = _run_compose("down" if remove else "stop")
+    if result.returncode != 0:
+        raise RuntimeError((result.stderr or result.stdout or "stop failed")[-500:])
     return status()
 
 
@@ -361,8 +639,8 @@ def _generate_admin_password() -> str:
 def _admin_reset_hint() -> str:
     volumes = " ".join(NATIVE_VOLUMES)
     return (
-        "Reset local SonarQube data with: "
-        f"sonar-local-down && docker volume rm {volumes}"
+        "Reset local SonarQube data (destroys it) with: "
+        f"sonar-local-down --remove && docker volume rm {volumes}"
     )
 
 
@@ -421,6 +699,8 @@ def ensure_token(*, project_key: str | None = None) -> str:
     if not is_running():
         start(wait=True)
 
+    # Never set an admin password or mint tokens on a server we do not own.
+    require_own_server()
     admin_password = _ensure_admin_password()
     code, body = _api(
         "POST",

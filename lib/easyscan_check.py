@@ -8,6 +8,8 @@ import shutil
 import subprocess
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
+
+from docker_util import run_docker
 from safe_io import urlopen as safe_urlopen
 
 
@@ -103,29 +105,37 @@ def check_docker(report: CheckReport, *, offline: bool) -> None:
     )
 
 
+def _docker_cmd(args: list[str], *, timeout: float) -> subprocess.CompletedProcess[str]:
+    """docker via run_docker: falls back to `sg docker` in a stale login session."""
+    try:
+        return run_docker(args, timeout=timeout)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return subprocess.CompletedProcess(["docker", *args], 1, "", str(exc))
+
+
 def check_images(report: CheckReport, *, offline: bool, pull: bool) -> None:
-    docker = shutil.which("docker")
-    if not docker:
+    if not shutil.which("docker"):
         return
     missing: list[str] = []
     for image in REQUIRED_IMAGES:
-        insp = _run([docker, "image", "inspect", image], timeout=30)
+        insp = _docker_cmd(["image", "inspect", image], timeout=30)
         if insp.returncode == 0:
             continue
         missing.append(image)
         if offline or not pull:
             continue
-        pull_r = _run([docker, "pull", image], timeout=300)
+        pull_r = _docker_cmd(["pull", image], timeout=600)
         if pull_r.returncode == 0:
             missing.pop()
     if missing:
         level = "soft" if offline else "hard"
+        hint = " (offline)" if offline else " — run: easyscan-check --pull-images"
         report.add(
             CheckItem(
                 "images",
                 False,
                 level,
-                "missing images: " + ", ".join(missing) + (" (offline)" if offline else ""),
+                "missing images: " + ", ".join(missing) + hint,
             )
         )
     else:
@@ -209,27 +219,65 @@ def check_local_env(report: CheckReport, *, require_local: bool) -> None:
         for line in text.splitlines()
     )
     ok = has_url and has_token
+    detail = "URL+token present" if ok else "sonar-local.env incomplete (token/url)"
+    if ok:
+        ok, detail = _validate_local_token(env_path)
     report.add(
         CheckItem(
             "local_env",
             ok,
             "hard" if require_local else "soft",
-            "URL+token present" if ok else "sonar-local.env incomplete (token/url)",
+            detail,
         )
     )
 
 
+def _validate_local_token(env_path: Path) -> tuple[bool, str]:
+    """Check the stored token against the stored URL (never prints the token)."""
+    from env_write import read_env_file
+    from server_health import AuthStatus, check_server
+
+    local = read_env_file(env_path)
+    url = local.get("SONARQUBE_URL", "")
+    health = check_server(url, local.get("SONARQUBE_TOKEN"), timeout=5)
+    if health.status == AuthStatus.OK:
+        return True, "URL+token present; token valid"
+    if health.status == AuthStatus.UNAUTHORIZED:
+        return False, f"token rejected by {url} — re-run sonar-local-up"
+    # Unreachable: local_server reports the server state.
+    return True, f"URL+token present; token not validated ({health.detail[:80]})"
+
+
+def _server_owner_detail() -> tuple[str, str]:
+    """(owner, detail) for port 9000; owner 'unknown' if docker is unusable."""
+    try:
+        from local_server import server_identity
+
+        ident = server_identity()
+    except Exception as exc:  # noqa: BLE001 — identity is best-effort
+        return "unknown", f"identity not checked: {exc}"
+    return ident.owner, ident.detail
+
+
 def check_local_server(report: CheckReport, *, require_local: bool) -> None:
+    level = "hard" if require_local else "soft"
     try:
         with safe_urlopen("http://127.0.0.1:9000/api/system/status", timeout=3) as resp:
             data = json.loads(resp.read().decode("utf-8"))
             up = data.get("status") == "UP"
+            if not up:
+                report.add(CheckItem("local_server", False, level, "not UP"))
+                return
+            owner, detail = _server_owner_detail()
+            if owner == "foreign":
+                report.add(CheckItem("local_server", False, level, f"wrong server: {detail}"))
+                return
             report.add(
                 CheckItem(
                     "local_server",
-                    up,
-                    "hard" if require_local else "soft",
-                    f"status={data.get('status')}" if up else "not UP",
+                    True,
+                    level,
+                    f"status=UP version={data.get('version')}; {detail}",
                 )
             )
     except (OSError, json.JSONDecodeError) as exc:
@@ -377,10 +425,9 @@ def check_unit_tests(report: CheckReport, root: Path, *, skip_tests: bool) -> No
 
 
 def check_compose_optional(report: CheckReport) -> None:
-    docker = shutil.which("docker")
-    if not docker:
+    if not shutil.which("docker"):
         return
-    probe = _run([docker, "compose", "version"], timeout=15)
+    probe = _docker_cmd(["compose", "version"], timeout=15)
     if probe.returncode == 0:
         report.add(CheckItem("compose", True, "soft", "docker compose available"))
     else:

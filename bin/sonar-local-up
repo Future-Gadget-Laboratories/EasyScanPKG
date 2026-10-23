@@ -19,6 +19,11 @@ from local_server import admin_login, ensure_token, start  # noqa: E402
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--json", action="store_true")
+    parser.add_argument(
+        "--show-password",
+        action="store_true",
+        help="print the local admin password (default: only the state file path)",
+    )
     args = parser.parse_args()
     st = start(wait=True)
     token = ensure_token()
@@ -29,7 +34,7 @@ def main() -> int:
         "url": st.url,
         "token_bootstrapped": bool(token),
         "admin_username": login["username"],
-        "admin_password": login["password"],
+        "admin_password": login["password"] if args.show_password else None,
         "admin_state_file": login["state_file"],
     }
     if args.json:
@@ -39,10 +44,12 @@ def main() -> int:
         print("UI login (open in a browser):")
         print(f"  url:      {login['url']}")
         print(f"  username: {login['username']}")
-        if login["password"]:
+        if not login["password"]:
+            print("  password: (not set yet — check boot logs)")
+        elif args.show_password:
             print(f"  password: {login['password']}")
         else:
-            print("  password: (not set yet — check boot logs)")
+            print("  password: (hidden; re-run with --show-password or read the state file)")
         print(f"  saved in: {login['state_file']}")
     return 0
 
