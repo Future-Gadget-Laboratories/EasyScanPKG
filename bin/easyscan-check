@@ -26,13 +26,19 @@ def main() -> int:
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
 
-    report = run_checks(
-        offline=args.offline,
-        require_local=args.require_local,
-        quick=args.quick,
-        pull_images=args.pull_images,
-        skip_tests=args.skip_tests,
-    )
+    from sonar_lease import lease
+    from sonar_runtime import on_demand_enabled
+
+    # On-demand mode: bring the local stack up for the check, stop it after.
+    on_demand = args.require_local and not args.offline and on_demand_enabled()
+    with lease("easyscan-check", enabled=on_demand):
+        report = run_checks(
+            offline=args.offline,
+            require_local=args.require_local,
+            quick=args.quick,
+            pull_images=args.pull_images,
+            skip_tests=args.skip_tests,
+        )
     if args.json:
         print(json.dumps(report_to_dict(report), indent=2))
     else:

@@ -58,14 +58,73 @@ Local stack helpers:
 
 ```bash
 ./bin/sonar-local-up      # SonarQube Community + Postgres on :9000
-./bin/sonar-local-down    # stop containers
+./bin/sonar-local-down    # stop containers (kept; add --remove to delete them, volumes stay)
 ```
 
+If port 9000 is already served by another SonarQube, `sonar-local-up` refuses to
+start (and never sets passwords or mints tokens on a server it does not own);
+`easyscan-check` reports the foreign server. Stop the other server first.
+When your user is in group `docker` but the current login session predates it,
+the tools run docker through `sg docker` automatically; no relogin is needed.
+
 `sonar-local-up` mints a local admin token into `~/.config/sft/sonar-local.env`
-and prints the admin password (also stored in
-`~/.config/sft/sonar-local-admin.json`). By default it also installs the
+and stores the admin password in `~/.config/sft/sonar-local-admin.json`
+(printed only with `--show-password`). By default it also installs the
 [sonar-cxx](https://github.com/SonarOpenCommunity/sonar-cxx) plugin for Community
 C/C++ (`cxx` language key). Disable with `SFT_INSTALL_SONAR_CXX=0`.
+
+### Memory, autostart and on-demand mode
+
+The local server is capped so it cannot push a small host into swap. Settings
+come from `sonar-local-up` flags, then the environment, then the optional
+non-secret file `~/.config/sft/sonar-runtime.env` (`KEY=VALUE` lines).
+
+| Setting | Values (default first) | Effect |
+| --- | --- | --- |
+| `SFT_SONAR_MEM_PROFILE` / `--mem-profile` | `low`, `normal`, `high` | Container cap plus web / Compute Engine / search JVM heaps, and the scanner heap |
+| `SFT_SONAR_MEM_LIMIT` / `--mem-limit` | e.g. `3g`, `3072m` (min `1536m`) | Container cap; the profile's heaps are kept if they fit, otherwise refitted inside the cap |
+| `SFT_SONAR_AUTOSTART` / `--no-autostart` | `1`, `0` | `0` creates the containers with `restart: "no"` (no start at boot/daemon restart) |
+| `SFT_SONAR_ON_DEMAND` | `0`, `1` | `1`: `easyscan-scan` and `easyscan-check --require-local` start the stack, use it, then stop it |
+| `SFT_SONAR_CXX_SET_DEFAULT` | `1`, `0` (also `true`/`false`, `yes`/`no`, `on`/`off`) | `1`: make "EasyScan CXX" the default cxx quality profile only when the current default is built-in (e.g. "Sonar way") or unset; a custom default is kept (one log line). `0`: never change the cxx default |
+
+| Profile | Container cap (no swap) | web | CE | search | scanner | Sized for |
+| --- | --- | --- | --- | --- | --- | --- |
+| `low` | 2560m | 512m | 640m | 512m | 1024m | 8 GB hosts |
+| `normal` | 4096m | 768m | 1024m | 1024m | 2048m | 16 GB hosts |
+| `high` | 6144m | 1024m | 2048m | 1536m | 3072m | large projects |
+
+`memswap_limit` equals the cap, so the container never swaps. The scanner heap
+is passed as `SONAR_SCANNER_JAVA_OPTS` unless you set it yourself. Memory and
+restart policy are applied when a container is created: `sonar-local-up`
+recreates `sft-sonarqube` by itself when they change (volumes are kept). To
+change only the restart policy of an existing container without restarting it:
+`docker update --restart=no sft-sonarqube sft-sonarqube-db`.
+
+**On-demand mode** (`SFT_SONAR_ON_DEMAND=1`, best with `SFT_SONAR_AUTOSTART=0`):
+each scan or check takes a lease under an exclusive `flock`
+(`~/.config/sft/sonar-local/on-demand.lock`). The first lease starts the stack if
+it is down, waits for UP and makes sure the scan token exists; a lease that
+joins a running server never reconfigures or recreates it (memory settings apply
+on the next start). The last lease out waits until the Compute Engine queue is
+confirmed empty and then **stops** the containers (never removes them or their
+volumes); if the queue cannot be confirmed idle, the server is left running for
+`--if-idle`. No scan stops the server under another lease, and
+`sonar-local-down` holds the same lock while it stops. A server that was
+already running before the first lease is left running. Leases of crashed runs
+(process gone, or PID reused) are pruned on the next acquire/release; run
+`sonar-local-down --if-idle` (safe from cron) to stop a lease-started server
+whose last user crashed. `sonar-local-down` refuses while leases are active
+unless `--force`. Wrap any other command with
+`sonar-local-lease -- <command>`; `sonar-local-lease --status` lists leases.
+Tools that do not take leases (older versions, manual `docker` use) are not
+tracked, so use a lease-aware tool whenever on-demand mode is on.
+
+```bash
+# ~/.config/sft/sonar-runtime.env (no secrets here)
+SFT_SONAR_MEM_PROFILE=low
+SFT_SONAR_AUTOSTART=0
+SFT_SONAR_ON_DEMAND=1
+```
 
 ## Verify install
 
@@ -115,7 +174,8 @@ while Sonar indexes. Re-query with `./bin/sonar-issues --local list` or
 | Action | Command |
 | --- | --- |
 | Spin up + open Cursor | `sonar-desktop` / EasyScan icon |
-| Local Sonar up / down | `./bin/sonar-local-up` / `./bin/sonar-local-down` |
+| Local Sonar up / down | `./bin/sonar-local-up [--mem-profile low\|normal\|high] [--mem-limit 3g] [--no-autostart]` / `./bin/sonar-local-down [--if-idle]` |
+| Hold the server for a command | `./bin/sonar-local-lease -- <command>` / `--status` |
 | Readiness check | `./bin/easyscan-check [--offline] [--require-local]` |
 | Named contexts (multi-project) | `./bin/sonar-context create\|list\|use\|bind` |
 | Create/bind project | `./bin/sonar-project --local create KEY --workspace "$PWD"` |
@@ -418,6 +478,8 @@ by project key + quality profile.
 | `~/.config/sft/sonar.env` | Optional remote URL/token |
 | `~/.config/sft/sonar-local.env` | Auto local token (**never commit**) |
 | `~/.config/sft/sonar-local-admin.json` | Generated local admin password |
+| `~/.config/sft/sonar-runtime.env` | Optional memory / autostart / on-demand settings (no secrets) |
+| `~/.config/sft/sonar-local/on-demand.{lock,json}` | On-demand lease lock and state |
 | `~/.config/sft/sonar-policy/policy.db` | Policy + named contexts (no tokens) |
 | `~/.config/sft/plugins/` | Cached plugin JARs (e.g. sonar-cxx) |
 | `~/.config/sft/scanners/` | Scanner tools from `easyscan-install-scanners` (`bin/`, `venv/`) |

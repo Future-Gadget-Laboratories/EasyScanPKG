@@ -2,8 +2,10 @@
 
 Downloads the compatible plugin JAR from GitHub releases into the SonarQube
 extensions volume (never vendors the JAR in git), restarts the server, enables
-CXX file suffixes, and bootstraps a usable quality profile (default Sonar way
-ships with all rules disabled).
+CXX file suffixes, and bootstraps a usable quality profile, "EasyScan CXX"
+(default Sonar way ships with all rules disabled). EasyScan CXX becomes the cxx
+default only while the default is built-in or unset; a custom default is kept,
+and SFT_SONAR_CXX_SET_DEFAULT=0 never changes the default.
 """
 
 from __future__ import annotations
@@ -11,6 +13,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import sys
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -27,9 +30,9 @@ from safe_io import urlopen as safe_urlopen
 DEFAULT_LOCAL_URL = "http://127.0.0.1:9000"
 SQ_CONTAINER = "sft-sonarqube"
 
-# Default pin: cxx-2.3.0 tested against Community Build 25.8 / 26.1 (Java 21).
-DEFAULT_CXX_TAG = "cxx-2.3.0"
-DEFAULT_CXX_JAR = "sonar-cxx-plugin-2.3.0.1496.jar"
+# Default pin: cxx-2.3.1 verified against Community Build 26.10 (Java 21).
+DEFAULT_CXX_TAG = "cxx-2.3.1"
+DEFAULT_CXX_JAR = "sonar-cxx-plugin-2.3.1.1656.jar"
 DEFAULT_CXX_URL = (
     f"https://github.com/SonarOpenCommunity/sonar-cxx/releases/download/"
     f"{DEFAULT_CXX_TAG}/{DEFAULT_CXX_JAR}"
@@ -40,7 +43,7 @@ SETTING_CXX_FILE_SUFFIXES = "sonar.cxx.file.suffixes"
 # Falls back to DEFAULT_CXX_TAG when no entry matches.
 COMPATIBILITY: list[tuple[str, str]] = [
     ("26.", DEFAULT_CXX_TAG),
-    ("25.8", DEFAULT_CXX_TAG),
+    ("25.8", "cxx-2.3.0"),
     ("25.", "cxx-2.2.1"),
     ("24.", "cxx-2.1.1"),
     ("10.", "cxx-2.1.1"),
@@ -50,6 +53,9 @@ COMPATIBILITY: list[tuple[str, str]] = [
 PLUGIN_CACHE = Path.home() / ".config" / "sft" / "plugins"
 CONTAINER_PLUGINS_DIR = "/opt/sonarqube/extensions/plugins"
 EASYSCAN_CXX_PROFILE = "EasyScan CXX"
+# Stock cxx profile names, used only when the API omits isBuiltIn.
+STOCK_CXX_PROFILES = frozenset({"Sonar way", "Sonar way comprehensive"})
+QP_SEARCH_PATH = "/api/qualityprofiles/search"
 DEFAULT_CXX_SUFFIXES = ".cxx,.cpp,.cc,.c,.hxx,.hpp,.hh,.h"
 
 # Built-in cxx rule repositories (exclude external-tool sensors).
@@ -233,6 +239,17 @@ def _restart_sonarqube(*, wait: bool = True) -> None:
         )
 
 
+def _rollback_plugin() -> bool:
+    """Move the cxx JAR(s) out of the plugins dir and bring the server back UP."""
+    from local_server import _disable_cxx_plugins_in_volume  # lazy: avoid import cycle
+
+    if not _disable_cxx_plugins_in_volume():
+        return False
+    if run_docker(["restart", SQ_CONTAINER], timeout=120).returncode != 0:
+        return False
+    return wait_for_system_up(DEFAULT_LOCAL_URL, timeout_s=300.0)
+
+
 def language_has_cxx(url: str, token: str | None = None) -> bool:
     code, data = api(url, token or "", "GET", "/api/languages/list") if token else (0, {})
     if not token:
@@ -301,7 +318,7 @@ def _find_profile(url: str, token: str, language: str, name: str) -> dict | None
         url,
         token,
         "GET",
-        "/api/qualityprofiles/search",
+        QP_SEARCH_PATH,
         query={"language": language},
     )
     if code != 200 or not isinstance(data, dict):
@@ -395,13 +412,13 @@ def _set_default_profile(url: str, token: str, *, language: str, profile_name: s
 def bootstrap_cxx_quality_profile(
     url: str = DEFAULT_LOCAL_URL, token: str | None = None
 ) -> str | None:
-    """Copy CXX Sonar way → EasyScan CXX, activate built-in rules, set default."""
+    """Copy CXX Sonar way → EasyScan CXX, activate built-in rules, default only if safe."""
     tok = token or _admin_token()
     base = url.rstrip("/")
     sonar_way = _find_profile(base, tok, "cxx", "Sonar way")
     if not sonar_way or not sonar_way.get("key"):
         code, data = api(
-            base, tok, "GET", "/api/qualityprofiles/search", query={"language": "cxx"}
+            base, tok, "GET", QP_SEARCH_PATH, query={"language": "cxx"}
         )
         if code == 200 and isinstance(data, dict) and data.get("profiles"):
             sonar_way = data["profiles"][0]
@@ -412,15 +429,150 @@ def bootstrap_cxx_quality_profile(
         return None
     _activate_builtin_cxx_rules(base, tok, profile["key"])
     name = profile.get("name") or EASYSCAN_CXX_PROFILE
-    _set_default_profile(base, tok, language="cxx", profile_name=name)
+    set_default, note = _cxx_default_decision(base, tok, name)
+    if set_default:
+        _set_default_profile(base, tok, language="cxx", profile_name=name)
+    elif note:
+        print(f"sonar-cxx: {note}", file=sys.stderr)
     return name
 
 
+def _cxx_default_decision(url: str, token: str, own_name: str) -> tuple[bool, str]:
+    """Whether to make own_name the cxx default, plus a one-line note when not.
+
+    Only a built-in default (e.g. "Sonar way") or no default is replaced; a
+    custom profile someone made the default is kept. SFT_SONAR_CXX_SET_DEFAULT=0
+    never changes the default.
+    """
+    from sonar_runtime import cxx_set_default_enabled
+
+    if not cxx_set_default_enabled():
+        return False, "default cxx profile left unchanged (disabled by SFT_SONAR_CXX_SET_DEFAULT)"
+    code, data = api(url, token, "GET", QP_SEARCH_PATH, query={"language": "cxx"})
+    if code != 200 or not isinstance(data, dict):
+        return False, f"default cxx profile left unchanged (profile list unavailable: HTTP {code})"
+    # SonarQube keeps exactly one default per language.
+    defaults = [p for p in data.get("profiles", []) if p.get("isDefault")]
+    if not defaults:
+        return True, ""
+    current = defaults[0]
+    if current.get("name") == own_name:
+        return False, ""  # already ours: nothing to do
+    built_in = current.get("isBuiltIn")
+    if built_in is True or (built_in is None and current.get("name") in STOCK_CXX_PROFILES):
+        return True, ""
+    return False, (
+        f"keeping custom default cxx profile {current.get('name')!r} "
+        f"({own_name!r} not made default; set it in SonarQube if wanted)"
+    )
+
+
 def _configure_cxx_runtime(url: str, token: str, *, bootstrap_profile: bool) -> str | None:
+    from local_server import require_own_server
+
+    require_own_server(url)
     configure_cxx_file_suffixes(url, token)
     if bootstrap_profile:
         return bootstrap_cxx_quality_profile(url, token)
     return None
+
+
+def _target_server_version(url: str) -> tuple[str | None, str | None]:
+    """(version of OUR container, refusal detail).
+
+    The plugin goes into the sft-sonarqube container, so it is chosen for that
+    container's version. Asking whatever answers the URL picked a 9.x plugin
+    for a 26.x container when another server held port 9000, which crash-looped
+    the container.
+    """
+    from local_server import container_server_version, server_identity  # lazy: import cycle
+
+    ident = server_identity(url)
+    if ident.owner != "sft":
+        return None, f"refusing cxx install: {ident.detail}"
+    version = ident.container_version or container_server_version() or None
+    if version is None and ident.owner == "sft":
+        version = fetch_server_version(url)
+    return version, None
+
+
+def _configure_existing(
+    url: str, *, jar_name: str, tag: str, bootstrap_profile: bool
+) -> CxxInstallResult:
+    try:
+        token = _admin_token()
+        profile = _configure_cxx_runtime(url, token, bootstrap_profile=bootstrap_profile)
+    except Exception as exc:  # noqa: BLE001 — surface config errors
+        return CxxInstallResult(
+            ok=False,
+            detail=f"installed but configure failed: {exc}",
+            jar_name=jar_name,
+            tag=tag,
+            has_cxx=True,
+        )
+    return CxxInstallResult(
+        ok=True,
+        detail="already installed",
+        jar_name=jar_name,
+        tag=tag,
+        profile=profile,
+        has_cxx=True,
+    )
+
+
+def _copy_and_restart(local_jar: Path, *, jar_name: str, tag: str) -> CxxInstallResult | None:
+    """Copy the JAR in and restart; on a failed start roll back. None = success."""
+    _docker_cp_into_plugins(local_jar)
+    try:
+        _restart_sonarqube(wait=True)
+    except RuntimeError as exc:
+        rolled_back = _rollback_plugin()
+        outcome = "plugin disabled, server back UP" if rolled_back else "rollback failed"
+        return CxxInstallResult(
+            ok=False,
+            detail=f"{jar_name} broke server startup ({exc}); {outcome}",
+            jar_name=jar_name,
+            tag=tag,
+            restarted=True,
+        )
+    return None
+
+
+def _install_plugin(
+    url: str,
+    *,
+    plugin_url: str,
+    jar_name: str,
+    tag: str,
+    copy: bool,
+    bootstrap_profile: bool,
+) -> CxxInstallResult:
+    local_jar = download_plugin_jar(plugin_url, jar_name)
+    _remove_old_cxx_plugins(keep=jar_name)
+    if copy:
+        failed = _copy_and_restart(local_jar, jar_name=jar_name, tag=tag)
+        if failed is not None:
+            return failed
+    token = _admin_token()
+    profile = _configure_cxx_runtime(url, token, bootstrap_profile=bootstrap_profile)
+    if not language_has_cxx(url, token):
+        return CxxInstallResult(
+            ok=False,
+            detail="plugin copied but language 'cxx' not listed after restart",
+            jar_name=jar_name,
+            tag=tag,
+            profile=profile,
+            restarted=copy,
+        )
+    return CxxInstallResult(
+        ok=True,
+        detail="installed" if copy else "configured",
+        jar_name=jar_name,
+        tag=tag,
+        profile=profile,
+        has_cxx=True,
+        restarted=copy,
+    )
 
 
 def ensure_cxx_plugin(
@@ -438,7 +590,9 @@ def ensure_cxx_plugin(
     if not is_running():
         return CxxInstallResult(ok=False, detail="local SonarQube container not running")
 
-    version = fetch_server_version(url)
+    version, refusal = _target_server_version(url)
+    if refusal:
+        return CxxInstallResult(ok=False, detail=refusal)
     try:
         plugin_url, jar_name, tag = resolve_plugin_url(version)
     except (OSError, RuntimeError, ValueError) as exc:
@@ -447,64 +601,19 @@ def ensure_cxx_plugin(
     if not is_plugin_jar_name(jar_name):
         return CxxInstallResult(ok=False, detail=f"refusing non-plugin JAR: {jar_name}")
 
-    restarted = False
     already = _plugin_already_installed(jar_name)
-    has = language_has_cxx(url)
-
-    if already and has and not force:
-        try:
-            token = _admin_token()
-            profile = _configure_cxx_runtime(url, token, bootstrap_profile=bootstrap_profile)
-            return CxxInstallResult(
-                ok=True,
-                detail="already installed",
-                jar_name=jar_name,
-                tag=tag,
-                profile=profile,
-                has_cxx=True,
-            )
-        except Exception as exc:  # noqa: BLE001 — surface config errors
-            return CxxInstallResult(
-                ok=False,
-                detail=f"installed but configure failed: {exc}",
-                jar_name=jar_name,
-                tag=tag,
-                has_cxx=has,
-            )
-
+    if already and language_has_cxx(url) and not force:
+        return _configure_existing(
+            url, jar_name=jar_name, tag=tag, bootstrap_profile=bootstrap_profile
+        )
     try:
-        local_jar = download_plugin_jar(plugin_url, jar_name)
-        _remove_old_cxx_plugins(keep=jar_name)
-        if not already or force:
-            _docker_cp_into_plugins(local_jar)
-            _restart_sonarqube(wait=True)
-            restarted = True
-        token = _admin_token()
-        profile = _configure_cxx_runtime(url, token, bootstrap_profile=bootstrap_profile)
-        has = language_has_cxx(url, token)
-        if not has:
-            return CxxInstallResult(
-                ok=False,
-                detail="plugin copied but language 'cxx' not listed after restart",
-                jar_name=jar_name,
-                tag=tag,
-                profile=profile,
-                restarted=restarted,
-            )
-        return CxxInstallResult(
-            ok=True,
-            detail="installed" if restarted else "configured",
+        return _install_plugin(
+            url,
+            plugin_url=plugin_url,
             jar_name=jar_name,
             tag=tag,
-            profile=profile,
-            has_cxx=True,
-            restarted=restarted,
+            copy=not already or force,
+            bootstrap_profile=bootstrap_profile,
         )
     except Exception as exc:  # noqa: BLE001
-        return CxxInstallResult(
-            ok=False,
-            detail=str(exc),
-            jar_name=jar_name,
-            tag=tag,
-            restarted=restarted,
-        )
+        return CxxInstallResult(ok=False, detail=str(exc), jar_name=jar_name, tag=tag)
