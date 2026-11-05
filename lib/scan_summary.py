@@ -20,20 +20,28 @@ Tunables (env): SFT_SCAN_CE_TIMEOUT (s, default 300), SFT_SCAN_ISSUES_TIMEOUT
 from __future__ import annotations
 
 import base64
+import http.client
 import json
 import os
 import sys
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Callable, Optional
+
+TRANSIENT = (urllib.error.URLError, http.client.HTTPException, OSError, TimeoutError,
+             ConnectionError, json.JSONDecodeError, KeyError, ValueError)
 
 CE_DONE = ("SUCCESS", "FAILED", "CANCELED")
 
 
 class SonarClient:
     def __init__(self, url: str, token: str, timeout: float = 30.0) -> None:
+        parsed = urllib.parse.urlsplit(url)
+        if parsed.scheme not in ("http", "https") or not parsed.netloc:
+            raise ValueError("SonarQube URL must be an HTTP(S) URL with a host")
         self.url = url.rstrip("/")
         self._auth = base64.b64encode(f"{token}:".encode()).decode()
         self.timeout = timeout
@@ -43,7 +51,8 @@ class SonarClient:
         if params:
             full += "?" + urllib.parse.urlencode(params)
         req = urllib.request.Request(full, headers={"Authorization": f"Basic {self._auth}"})
-        with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+        # The URL scheme is validated in __init__.
+        with urllib.request.urlopen(req, timeout=self.timeout) as resp:  # nosec B310  # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected
             return json.loads(resp.read().decode())
 
 
@@ -72,7 +81,7 @@ def wait_ce_task(client: SonarClient, task_id: Optional[str], project_key: str,
             else:
                 tasks = client.get("/api/ce/activity", {"component": project_key, "ps": 1}).get("tasks", [])
                 status = tasks[0].get("status", "UNKNOWN") if tasks else "UNKNOWN"
-        except Exception as exc:  # transient server hiccup: keep polling
+        except TRANSIENT as exc:  # transient server hiccup: keep polling
             status = f"ERROR ({type(exc).__name__})"
         if status in CE_DONE:
             return status, False
@@ -97,7 +106,7 @@ def wait_issue_count(client: SonarClient, project_key: str, timeout: float,
             total = int(client.get("/api/issues/search", {
                 "componentKeys": project_key, "resolved": "false", "ps": 1,
             }).get("total", 0))
-        except Exception:
+        except TRANSIENT:
             total = None
         if total is not None:
             streak = streak + 1 if total == last else 1
@@ -145,7 +154,7 @@ def run(env: dict, out=sys.stdout, err=sys.stderr,
     print(f"total issues: {total if total is not None else 'unknown'}{' (unsettled)' if iss_to else ''}", file=out)
     try:
         print_issues(client, key, out)
-    except Exception as exc:
+    except TRANSIENT as exc:
         print(f"    issue listing failed: {type(exc).__name__}", file=err)
     if total and total > 25:
         print(f"  ... and {total - 25} more", file=out)
