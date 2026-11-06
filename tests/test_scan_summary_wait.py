@@ -121,24 +121,26 @@ class ScanSummaryWaitTest(unittest.TestCase):
             with self.subTest(totals=totals):
                 client = Mock(url="http://127.0.0.1:9000")
                 remaining = list(totals)
+                now = [0.0]
 
-                def get(path, params):
+                def get(path, params, remaining=remaining):
                     if path == "/api/ce/task":
                         return {"task": {"status": "SUCCESS"}}
                     total = remaining.pop(0) if len(remaining) > 1 else remaining[0]
                     return {"total": total, "issues": []}
 
-                client.get.side_effect = get
-                now = [0.0]
-
-                def sleep(seconds):
+                def sleep(seconds, now=now):
                     now[0] += seconds
 
+                def clock(now=now):
+                    return now[0]
+
+                client.get.side_effect = get
                 out, err = io.StringIO(), io.StringIO()
                 with patch.object(scan_summary, "SonarClient", return_value=client):
                     rc = scan_summary.run(
                         self._env(client, SFT_SCAN_POLL_INTERVAL="3", SFT_SCAN_ISSUES_TIMEOUT="180"),
-                        out=out, err=err, sleep=sleep, clock=lambda: now[0])
+                        out=out, err=err, sleep=sleep, clock=clock)
                 self.assertEqual(rc, 5)
                 self.assertEqual(now[0], 180)
                 self.assertIn("total issues: 0 (unsettled)", out.getvalue())
