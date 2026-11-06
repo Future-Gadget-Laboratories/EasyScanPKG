@@ -87,6 +87,63 @@ class ScanSummaryWaitTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             scan_summary.SonarClient("file:///tmp/sonar", FAKE_TOKEN)
 
+    def test_rejects_empty_hostname(self):
+        with self.assertRaises(ValueError):
+            scan_summary.SonarClient("http://:9000", FAKE_TOKEN)
+
+    def test_accepts_http_hostname(self):
+        client = scan_summary.SonarClient("http://127.0.0.1:9000", FAKE_TOKEN)
+        self.assertEqual(client.url, "http://127.0.0.1:9000")
+
+    def test_three_quick_zeros_do_not_hide_later_positive_total(self):
+        client = Mock()
+        client.get.side_effect = [{"total": n} for n in (0, 0, 0, 7, 7, 7)]
+        now = [0.0]
+
+        def sleep(seconds):
+            now[0] += seconds
+
+        result = scan_summary.wait_issue_count(
+            client, "k", 180, 3, 3, sleep=sleep, clock=lambda: now[0])
+        self.assertEqual(result, (7, False))
+        self.assertEqual(client.get.call_count, 6)
+        self.assertEqual(now[0], 15)
+
+    def test_stable_positive_total_still_settles(self):
+        client = Mock()
+        client.get.return_value = {"total": 7}
+        self.assertEqual(scan_summary.wait_issue_count(client, "k", 180, 0, 3),
+                         (7, False))
+        self.assertEqual(client.get.call_count, 3)
+
+    def test_zero_count_times_out_with_exit_five(self):
+        for totals in ([0], [7, 0]):
+            with self.subTest(totals=totals):
+                client = Mock(url="http://127.0.0.1:9000")
+                remaining = list(totals)
+
+                def get(path, params):
+                    if path == "/api/ce/task":
+                        return {"task": {"status": "SUCCESS"}}
+                    total = remaining.pop(0) if len(remaining) > 1 else remaining[0]
+                    return {"total": total, "issues": []}
+
+                client.get.side_effect = get
+                now = [0.0]
+
+                def sleep(seconds):
+                    now[0] += seconds
+
+                out, err = io.StringIO(), io.StringIO()
+                with patch.object(scan_summary, "SonarClient", return_value=client):
+                    rc = scan_summary.run(
+                        self._env(client, SFT_SCAN_POLL_INTERVAL="3", SFT_SCAN_ISSUES_TIMEOUT="180"),
+                        out=out, err=err, sleep=sleep, clock=lambda: now[0])
+                self.assertEqual(rc, 5)
+                self.assertEqual(now[0], 180)
+                self.assertIn("total issues: 0 (unsettled)", out.getvalue())
+                self.assertIn("WARNING: issue count did not settle", err.getvalue())
+
     def test_polling_retries_url_errors(self):
         client = Mock()
         client.get.side_effect = [urllib.error.URLError("offline"), {"task": {"status": "SUCCESS"}},
