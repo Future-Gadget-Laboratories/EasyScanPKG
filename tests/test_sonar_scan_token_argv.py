@@ -68,10 +68,14 @@ class SonarScanTokenArgvTest(unittest.TestCase):
             # post-scan API calls fail fast without touching any real server.
             "SONARQUBE_URL": "http://sonar.invalid:9",
             "SONARQUBE_PROJECT_KEY": "argv-test",
+            # Bound the post-scan Sonar waits added in #12 so .invalid cannot
+            # outlast this subprocess timeout; harmless without scan_summary.
+            "SFT_SCAN_CE_TIMEOUT": "1",
+            "SFT_SCAN_ISSUES_TIMEOUT": "1",
         }
         return subprocess.run(
             ["bash", str(SCAN), "--workspace", str(self.ws)],
-            env=env, capture_output=True, text=True, timeout=120,
+            env=env, capture_output=True, text=True, timeout=120, check=False,
         )
 
     def test_token_never_in_docker_argv(self) -> None:
