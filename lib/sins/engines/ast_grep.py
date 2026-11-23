@@ -67,7 +67,7 @@ def _version(binary: Path) -> str:
     """Read and validate the engine's one-line version response."""
     try:
         result = subprocess.run([str(binary), "--version"], check=False, capture_output=True,
-                                text=True, timeout=10)
+                                text=True, encoding="utf-8", errors="replace", timeout=10)
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise EngineError(f"ast-grep: cannot run {binary}; run `sins engines install`: {exc}") from exc
     if result.returncode != 0:
@@ -115,7 +115,11 @@ def _download(url: str) -> bytes:
         if parsed.scheme == "file":
             from urllib.request import url2pathname
             local_path = Path(url2pathname(parsed.path))
-            return local_path.read_bytes()[:100 * 1024 * 1024 + 1]
+            max_bytes = 100 * 1024 * 1024
+            if local_path.stat().st_size > max_bytes:
+                raise EngineError("ast-grep archive exceeds 100 MiB limit")
+            with local_path.open("rb") as stream:
+                return stream.read(max_bytes + 1)
         else:
             class HttpsRedirectHandler(urllib.request.HTTPRedirectHandler):
                 """Reject redirects that downgrade a pinned HTTPS download."""
@@ -189,7 +193,11 @@ def _replace_directory(stage: Path, destination: Path) -> None:
     if destination.exists() or destination.is_symlink():
         backup_root = Path(tempfile.mkdtemp(prefix=".ast-grep-backup-", dir=destination.parent))
         backup = backup_root / destination.name
-        destination.rename(backup)
+        try:
+            destination.rename(backup)
+        except OSError:
+            shutil.rmtree(backup_root)
+            raise
     try:
         stage.rename(destination)
     except OSError:
@@ -245,7 +253,7 @@ def _invoke(binary: Path, repo: Path, rule: Rule, paths: list[Path]) -> list[dic
                    *[path.relative_to(repo).as_posix() for path in paths[start:start + CHUNK_SIZE]]]
         try:
             result = subprocess.run(command, cwd=repo, capture_output=True, text=True,
-                                    timeout=TIMEOUT_SECONDS)
+                                    encoding="utf-8", errors="replace", timeout=TIMEOUT_SECONDS)
         except (OSError, subprocess.TimeoutExpired) as exc:
             raise EngineError(f"ast-grep failed for {rule.id}: {exc}") from exc
         if result.returncode != 0:
@@ -320,7 +328,8 @@ def validate_parse(rule: Rule, path: Path) -> None:
         try:
             result = subprocess.run([str(binary), "scan", "--inline-rules", inline, "--json=stream",
                                      "--threads", "2", "--", str(path)], cwd=path.parent,
-                                    capture_output=True, text=True, timeout=TIMEOUT_SECONDS)
+                                    capture_output=True, text=True, encoding="utf-8",
+                                    errors="replace", timeout=TIMEOUT_SECONDS)
         except (OSError, subprocess.TimeoutExpired) as exc:
             raise EngineError(f"ast-grep parse check failed for {path}: {exc}") from exc
         if result.returncode != 0:
@@ -348,7 +357,7 @@ def rewrite_text(rule: Rule, content: str) -> str:
                    str(source)]
         try:
             result = subprocess.run(command, cwd=folder, capture_output=True, text=True,
-                                    timeout=TIMEOUT_SECONDS)
+                                    encoding="utf-8", errors="replace", timeout=TIMEOUT_SECONDS)
         except (OSError, subprocess.TimeoutExpired) as exc:
             raise EngineError(f"ast-grep rewrite failed for {rule.id}: {exc}") from exc
         if result.returncode != 0:
@@ -366,21 +375,27 @@ def rewrite_text_non_overlapping(rule: Rule, content: str) -> tuple[str, bool]:
 def rewrite_match_spans(rule: Rule, content: str, findings: list[Finding],
                         skipped: set[int]) -> tuple[str, bool]:
     """Rewrite non-overlapping matched snippets while preserving skipped spans."""
+    if not skipped:
+        return rewrite_text(rule, content), False
     lines = content.splitlines(keepends=True)
+    starts = _line_starts(lines)
+    spans = sorted((_finding_offsets(item, lines, starts) for index, item in enumerate(findings)
+                    if index not in skipped), reverse=True)
+    output = content
+    for start, end in spans:
+        replacement = rewrite_text(rule, content[start:end])
+        output = output[:start] + replacement + output[end:]
+    return output, True
+
+
+def _line_starts(lines: list[str]) -> list[int]:
+    """Build source character offsets for each line."""
     starts: list[int] = []
     offset = 0
     for line in lines:
         starts.append(offset)
         offset += len(line)
-    spans = [_finding_offsets(item, lines, starts) for item in findings]
-    output = content
-    for index in reversed(range(len(findings))):
-        if index in skipped:
-            continue
-        start, end = spans[index]
-        replacement = rewrite_text(rule, content[start:end])
-        output = output[:start] + replacement + output[end:]
-    return output, bool(skipped)
+    return starts
 
 
 def _finding_offsets(finding: Finding, lines: list[str], starts: list[int]) -> tuple[int, int]:
@@ -388,7 +403,12 @@ def _finding_offsets(finding: Finding, lines: list[str], starts: list[int]) -> t
     start_line, end_line = finding.line - 1, finding.end_line - 1
     start_bytes = lines[start_line].encode("utf-8")[:finding.col - 1]
     end_bytes = lines[end_line].encode("utf-8")[:finding.end_col - 1]
-    return starts[start_line] + len(start_bytes.decode("utf-8")), starts[end_line] + len(end_bytes.decode("utf-8"))
+    try:
+        start_column = len(start_bytes.decode("utf-8"))
+        end_column = len(end_bytes.decode("utf-8"))
+    except UnicodeDecodeError as exc:
+        raise EngineError("ast-grep returned a non-character byte offset") from exc
+    return starts[start_line] + start_column, starts[end_line] + end_column
 
 
 def _open_needs_encoding(source: str) -> bool:
@@ -412,8 +432,9 @@ def _call_needs_encoding(call: ast.Call) -> bool:
         return False
     mode = call.args[1] if len(call.args) > 1 else next(
         (keyword.value for keyword in call.keywords if keyword.arg == "mode"), None)
-    if isinstance(mode, ast.Constant) and isinstance(mode.value, str) and "b" in mode.value:
-        return False
+    if mode is not None:
+        if not isinstance(mode, ast.Constant) or not isinstance(mode.value, str) or "b" in mode.value:
+            return False
     return bool(call.args) or any(keyword.arg == "file" for keyword in call.keywords)
 
 
@@ -424,11 +445,7 @@ def _rewrite_open_calls(source: str, *, skip_overlapping: bool = False) -> tuple
     except SyntaxError as exc:
         raise EngineError(f"cannot rewrite invalid Python: {exc}") from exc
     lines = source.splitlines(keepends=True)
-    starts: list[int] = []
-    offset = 0
-    for line in lines:
-        starts.append(offset)
-        offset += len(line)
+    starts = _line_starts(lines)
     calls: list[tuple[int, int, int]] = []
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call) or not _call_needs_encoding(node):

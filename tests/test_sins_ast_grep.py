@@ -85,6 +85,19 @@ class AstGrepIntegrationTests(unittest.TestCase):
         self.assertFalse(ast_grep._open_needs_encoding("open('a', 'rb', opener=helper(open('b')))"))
         self.assertTrue(ast_grep._open_needs_encoding("open('a', 'r', 1)"))
         self.assertFalse(ast_grep._open_needs_encoding("open(*args)"))
+        for source in ("open(p, mode)", "open(p, mode=flags)", "open(*a)", "open(**kw)"):
+            with self.subTest(source=source):
+                self.assertFalse(ast_grep._open_needs_encoding(source))
+
+    def test_open_without_encoding_scan_skips_dynamic_modes(self) -> None:
+        rule = load_rule(Path(__file__).resolve().parents[1] / "lib/sins/rules/python/py-open-without-encoding.toml")
+        with tempfile.TemporaryDirectory(prefix="sins-open-dynamic-mode-") as folder:
+            repo = Path(folder)
+            (repo / "fixture.py").write_text(
+                "open(p, mode)\nopen(p, mode=flags)\nopen(*a)\nopen(**kw)\nopen(p)\n",
+                encoding="utf-8")
+            findings = ast_grep.scan_rule(repo, rule)
+            self.assertEqual([item.line for item in findings], [5])
 
     def test_open_with_trailing_comma_comment_rewrites_validly(self) -> None:
         source = "open(\n    'file',  # keep this comma\n)\n"

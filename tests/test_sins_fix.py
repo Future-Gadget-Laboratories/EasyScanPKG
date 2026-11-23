@@ -14,6 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
 
 from sins.cli import main
 from sins.engines.ast_grep import EngineError, resolve_binary
+from sins.regex_engine import Finding
 
 
 def invoke(*args: str) -> tuple[int, str]:
@@ -207,6 +208,59 @@ class FixCommandTests(unittest.TestCase):
             self.assertIn("skipped=1", output)
             self.assertIn("foo(foo())", source.read_text(encoding="utf-8"))
             self.assertIn("bar()", source.read_text(encoding="utf-8"))
+
+    def test_generic_rewrite_sorts_out_of_order_finding_spans(self) -> None:
+        from sins.engines.ast_grep import rewrite_match_spans
+        from sins.rules import load_rule
+
+        with tempfile.TemporaryDirectory(prefix="sins-spans-out-of-order-") as folder:
+            repo = Path(folder)
+            rule_path = repo / "rule.toml"
+            rule_path.write_text(
+                'id = "rename-call"\nversion = 1\nphrase = "rename call"\n'
+                'description = "test"\nlanguage = "cpp"\nseverity = "minor"\nmortal = false\n'
+                'engine = "ast-grep"\n[paths]\ninclude = ["**/*.cpp"]\n'
+                '[match.rule]\npattern = "foo($$$ARGS)"\n'
+                '[fix]\nkind = "rewrite"\ntemplate = "renamed_longer($$$ARGS)"\n'
+                '[examples]\nbad = ["foo();"]\ngood = ["bar();"]\nfixed = ["renamed_longer();"]\n',
+                encoding="utf-8")
+            rule = load_rule(rule_path)
+            content = "void f() { foo(1); foo(2); foo(foo(3)); }\n"
+
+            def finding(snippet: str) -> Finding:
+                start = content.index(snippet)
+                return Finding("rename-call", "sample.cpp", 1, start + 1, 1,
+                               start + len(snippet) + 1, "rename call", "minor")
+
+            findings = [finding("foo(2)"), finding("foo(1)"), finding("foo(foo(3))"), finding("foo(3)")]
+            rewritten, has_overlap = rewrite_match_spans(rule, content, findings, {2, 3})
+            self.assertTrue(has_overlap)
+            self.assertEqual(
+                rewritten,
+                "void f() { renamed_longer(1); renamed_longer(2); foo(foo(3)); }\n")
+
+    def test_generic_rewrite_without_overlaps_keeps_ast_context(self) -> None:
+        from sins.engines.ast_grep import rewrite_match_spans, scan_rule
+        from sins.rules import load_rule
+
+        with tempfile.TemporaryDirectory(prefix="sins-spans-context-") as folder:
+            repo = Path(folder)
+            rule_path = repo / "rule.toml"
+            rule_path.write_text(
+                'id = "context-call"\nversion = 1\nphrase = "rename call"\n'
+                'description = "test"\nlanguage = "cpp"\nseverity = "minor"\nmortal = false\n'
+                'engine = "ast-grep"\n[paths]\ninclude = ["**/*.cpp"]\n'
+                '[match.rule]\npattern = "foo($$$ARGS)"\n'
+                '[match.rule.inside]\nkind = "function_definition"\nstopBy = "end"\n'
+                '[fix]\nkind = "rewrite"\ntemplate = "renamed_longer($$$ARGS)"\n'
+                '[examples]\nbad = ["foo();"]\ngood = ["bar();"]\nfixed = ["renamed_longer();"]\n',
+                encoding="utf-8")
+            rule = load_rule(rule_path)
+            content = "void f() { foo(1); }\n"
+            (repo / "sample.cpp").write_text(content, encoding="utf-8")
+            rewritten, has_overlap = rewrite_match_spans(rule, content, scan_rule(repo, rule), set())
+            self.assertFalse(has_overlap)
+            self.assertEqual(rewritten, "void f() { renamed_longer(1); }\n")
 
 
 if __name__ == "__main__":
