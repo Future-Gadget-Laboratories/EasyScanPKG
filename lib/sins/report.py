@@ -32,6 +32,7 @@ def make_report(repo: Path, rules: list[Rule], findings: list[Finding]) -> dict[
                      "threshold": rule.threshold, "count_total": len(entries),
                      "count_forgiven": sum(item.forgiven for item in entries),
                      "count_unforgiven": sum(not item.forgiven for item in entries),
+                     "count_new": sum(bool(getattr(item, "is_new", False)) for item in entries),
                      "by_path": dict(sorted(paths.items())),
                      "fixable": {"rewrite": "auto", "template": "template"}.get(rule.fix_kind or "", "manual")})
     unforgiven = sum(not item.forgiven for item in findings)
@@ -42,11 +43,14 @@ def make_report(repo: Path, rules: list[Rule], findings: list[Finding]) -> dict[
             "rules_version": RULES_VERSION, "generated_at": datetime.now(timezone.utc).isoformat(),
             "engine_versions": {"regex": "python-re"},
             "totals": {"findings": len(findings), "unforgiven": unforgiven,
+                       "new": sum(bool(getattr(item, "is_new", False)) for item in findings),
                        "mortal_over": over, "sins_with_findings": sum(entry["count_total"] > 0 for entry in sins)},
-            "policy_tampering": [], "engine_errors": [], "sins": sins,
+            "policy_tampering": [], "warnings": [], "engine_errors": [], "sins": sins,
             "findings": [{"sin": item.sin, "path": item.path, "line": item.line, "col": item.col,
                           "end_line": item.end_line, "end_col": item.end_col, "severity": item.severity,
-                          "message": item.message, "forgiven": item.forgiven, "fix": None} for item in findings],
+                          "message": item.message, "forgiven": item.forgiven,
+                          "fingerprint": item.fingerprint, "new": bool(getattr(item, "is_new", False)),
+                          "fix": None} for item in findings],
             "errors": []}
 
 

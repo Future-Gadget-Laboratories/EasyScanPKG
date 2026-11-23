@@ -49,6 +49,71 @@ the threshold is unlimited; set it explicitly (including `0`) to enable a cap.
 Regex matching uses Python `re` with MULTILINE. Files over 2 MiB, files with a
 NUL byte in the first 8 KiB, and common generated/build directories are skipped.
 
+## Repo policy and forgiveness
+
+`.sins/policy.toml` overlays rule defaults without replacing rules:
+
+```toml
+[sins.py-bare-except]
+mortal_threshold = 3
+enabled = true
+mortal = false
+
+[paths]
+exclude = ["vendor/**", "generated/**"]
+```
+
+Only `mortal_threshold` (integer >= 0), `enabled` (boolean), and `mortal`
+(boolean) are accepted per sin. Unknown sin IDs, keys, or invalid values are
+configuration errors (exit 2). Global `paths.exclude` patterns apply to every
+rule in addition to each rule's own excludes. Policy values overlay the rule
+defaults; disabled sins are omitted from the scan.
+
+Forgiveness must be in a real comment and include a reason:
+
+```python
+except:  # sins: forgive py-bare-except -- legacy API boundary
+# sins: forgive py-bare-except -- upstream compatibility requirement
+except:
+```
+
+The standalone comment applies to the next non-blank line. C++ recognizes
+`//` and `/* */` comments and also supports Paladin's `//forgive me` for that
+line. Quoted strings are skipped when looking for comment markers. Forgiven
+findings remain in the report (`forgiven: true`) and are excluded from the
+unforgiven counts. A marker without a non-empty reason creates the venial
+built-in meta finding `sins-forgive-without-reason`.
+
+## Fingerprints, baselines, and diffs
+
+Each finding includes a 16-character SHA-256 fingerprint derived from its sin
+ID, repository-relative path, whitespace-collapsed matched text, and nearest
+preceding non-blank non-match line (`<bof>` at the beginning of a file). Counts
+use fingerprint multisets, so line shifts remain stable and another identical
+finding still counts as an additional occurrence.
+
+```bash
+./bin/sins baseline write --repo . [--out .sins/baseline.json]
+./bin/sins scan --repo . --baseline .sins/baseline.json --format json
+./bin/sins diff --repo . --base origin/main --json
+./bin/sins diff --repo . --base origin/main --head feature/ref
+./bin/sins scan --repo . --fail-on new --base origin/main
+```
+
+Baseline JSON stores per-sin fingerprint multisets and totals with the rules
+version. Scans report `count_new` per sin and `totals.new`. `diff` defaults its
+base snapshot to `merge-base(<REF>, HEAD)` and compares it with the working tree
+unless `--head` names another ref. Detached temporary Git worktrees keep ref
+scans isolated and are removed after each scan, including on failure. Refs are
+validated before being passed to Git. `--fail-on new` uses the same merge-base
+comparison and defaults to `origin/main`; without that ref, pass `--base`.
+
+Under `--fail-on new`, added suppression comments and changes to `.sins` policy,
+baseline, or rule TOML are listed in `policy_tampering`. Any new unforgiven
+finding or tampering exits 1. `--allow-policy-change` leaves the entries in the
+report but does not fail on tampering. Invalid policy, rule, Git ref, or scan
+configuration still exits 2.
+
 ## Commands
 
 ```bash
@@ -63,8 +128,7 @@ NUL byte in the first 8 KiB, and common generated/build directories are skipped.
 
 `--rules-dir DIR` can be repeated to load additional TOML packs. `--rule ID`
 can be repeated to select rules. `--fail-on mortal` is the default;
-`--fail-on any` gates on every finding. `--fail-on new` is reserved for S3 and
-returns a configuration error in S1. `scan` and `count` have identical
+`--fail-on any` gates on every unforgiven finding. `scan` and `count` have identical
 behavior and both print the count table by default. `--json OUT` also writes a
 report file (`-` writes JSON to stdout); `--format json` prints it to stdout.
 
@@ -90,7 +154,7 @@ Precedence is 2 > 3 > 1 > 0.
 ## Roadmap
 
 - S2: review-with-fix schema and reviewer guidance.
-- S3: policy, forgiveness, baselines, fingerprints, diff, and `--fail-on new`.
+- S3: policy, forgiveness, baselines, fingerprints, diff, and `--fail-on new` (implemented).
 - S4: pinned ast-grep engine and safe rewrites.
 - S5: pinned semantic engine and external checker importer.
 - S6: trusted Paladin report federation.

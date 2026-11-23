@@ -30,6 +30,8 @@ class Finding:
     message: str
     severity: str
     forgiven: bool = False
+    fingerprint: str = ""
+    is_new: bool = False
 
 
 def _glob_match(relative: str, pattern: str) -> bool:
@@ -77,10 +79,12 @@ def _included(relative: str, rule: Rule) -> bool:
     )
 
 
-def _scan_file(file: Path, relative: str, rule: Rule, matcher: re.Pattern[str]) -> list[Finding]:
+def _scan_file(file: Path, relative: str, rule: Rule, matcher: re.Pattern[str],
+               global_excludes: tuple[str, ...] = ()) -> list[Finding]:
     """Read one regular, bounded UTF-8 file and emit 1-based findings."""
     file_stat = file.lstat()
-    if not stat.S_ISREG(file_stat.st_mode) or file_stat.st_size > MAX_BYTES or not _included(relative, rule):
+    if (not stat.S_ISREG(file_stat.st_mode) or file_stat.st_size > MAX_BYTES
+            or not _included(relative, rule) or any(_glob_match(relative, item) for item in global_excludes)):
         return []
     with file.open("rb") as handle:
         raw = handle.read(MAX_BYTES + 1)
@@ -93,12 +97,17 @@ def _scan_file(file: Path, relative: str, rule: Rule, matcher: re.Pattern[str]) 
         end_line = content.count("\n", 0, match.end()) + 1
         start_offset = content.rfind("\n", 0, match.start())
         end_offset = content.rfind("\n", 0, match.end())
+        span = match.group(0)
+        preceding = [line for line in content[:match.start()].splitlines() if line.strip()]
+        anchor = preceding[-1] if preceding else "<bof>"
+        from .policy import fingerprint
         findings.append(Finding(rule.id, relative, start_line, match.start() - start_offset,
-                                end_line, match.end() - end_offset, rule.phrase, rule.severity))
+                                end_line, match.end() - end_offset, rule.phrase, rule.severity,
+                                fingerprint=fingerprint(rule.id, relative, span, anchor)))
     return findings
 
 
-def scan_rule(repo: Path, rule: Rule) -> list[Finding]:
+def scan_rule(repo: Path, rule: Rule, global_excludes: tuple[str, ...] = ()) -> list[Finding]:
     """Scan eligible UTF-8 files while pruning skipped directories."""
     findings: list[Finding] = []
     matcher = re.compile(rule.pattern, re.MULTILINE | _regex_flags(rule.flags))
@@ -110,7 +119,7 @@ def scan_rule(repo: Path, rule: Rule) -> list[Finding]:
         for filename in sorted(filenames):
             file = base / filename
             relative = file.relative_to(repo).as_posix()
-            findings.extend(_scan_file(file, relative, rule, matcher))
+            findings.extend(_scan_file(file, relative, rule, matcher, global_excludes))
     return findings
 
 
