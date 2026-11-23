@@ -124,7 +124,9 @@ def _forgive_findings(repo: Path, rules: list[Rule], findings: list[Finding],
     by_path: dict[str, list[str]] = {}
     for item in findings:
         if item.path not in by_path:
-            by_path[item.path] = (repo / item.path).read_text(encoding="utf-8", errors="replace").splitlines()
+            by_path[item.path] = [line.rstrip("\r") for line in
+                                  (repo / item.path).read_bytes().decode(
+                                      "utf-8", errors="replace").split("\n")]
         forgiven = forgiveness_for_line(by_path[item.path], item.line, languages[item.sin], item.sin)
         result.append(replace(item, forgiven=forgiven))
     malformed = _malformed_findings(repo, by_path, excludes)
@@ -148,7 +150,7 @@ def _read_scannable_lines(file: Path) -> list[str] | None:
         return None
     if len(raw) > 2 * 1024 * 1024 or b"\0" in raw[:8192]:
         return None
-    return raw.decode("utf-8", errors="replace").splitlines()
+    return [line.rstrip("\r") for line in raw.decode("utf-8", errors="replace").split("\n")]
 
 
 def _malformed_findings(repo: Path, by_path: dict[str, list[str]],
@@ -268,6 +270,9 @@ def _tracked_policy_tampering(repo: Path, base: str) -> list[dict]:
                 new = new_path.read_text(encoding="utf-8") if new_path.is_file() else ""
                 tampered = _rule_narrowed(old, new)
                 detail = "rule enforcement, match, or paths weakened"
+            elif status.startswith("T"):
+                tampered = True
+                detail = "rule file replaced with symlink"
         elif changed.startswith(".sins/") and "baseline" in changed:
             tampered = True
             detail = "baseline file changed"
@@ -305,6 +310,10 @@ def _inspect_untracked(repo: Path, relative: str,
         entries.append({"kind": "sins-policy-change", "path": relative, "line": 0,
                         "detail": "untracked .sins artifact"})
     candidate = repo / relative
+    if relative == ".sins/policy.toml" and candidate.is_symlink():
+        entries.append({"kind": "sins-policy-change", "path": relative, "line": 0,
+                        "detail": "policy file is a symlink"})
+        return entries
     lines = _read_scannable_lines(candidate)
     if lines is None:
         return entries
@@ -352,7 +361,8 @@ def _suppression_entries(path: str, line: int, text: str, repo: Path,
         if path not in py_cache:
             py_cache[path] = _python_comments(repo, path)
         parsed = py_cache[path]
-        segments = [("hash", part) for part in parsed.get(line, ())] if parsed is not None else []
+        segments = ([("hash", part) for part in parsed.get(line, ())]
+                    if parsed is not None else _comment_segments(text, "python"))
     else:
         segments = _comment_segments(text, "cpp" if language == "cpp" else "text")
     matches = []

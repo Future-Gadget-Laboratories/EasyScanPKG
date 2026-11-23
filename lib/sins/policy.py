@@ -104,11 +104,6 @@ def fingerprint(sin_id: str, path: str, span: str, anchor: str) -> str:
 _FORGIVE = re.compile(r"sins:\s*forgive\s+([a-z0-9_-]+(?:\s*,\s*[a-z0-9_-]+)*)\s*--\s*(.*)$")
 
 
-def _comment_text(line: str, language: str) -> str:
-    """Return comment portions after skipping quoted strings on a source line."""
-    return " ".join(text for _kind, text in _comment_segments(line, language))
-
-
 def _comment_segments(line: str, language: str) -> list[tuple[str, str]]:
     """Tokenize comment regions while skipping quoted source strings."""
     quoted = ""

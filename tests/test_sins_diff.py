@@ -10,9 +10,10 @@ import tempfile
 import unittest
 from pathlib import Path
 import sys
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
-from sins.cli import _policy_tampering, main
+from sins.cli import _policy_tampering, main, _read_scannable_lines
 from sins.git_tools import worktree
 
 
@@ -41,6 +42,57 @@ def make_repo(repo: Path) -> str:
 
 
 class DiffTests(unittest.TestCase):
+    def test_python_suppression_fallback_handles_tokenizer_errors(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            repo = Path(temp)
+            make_repo(repo)
+            file = repo / "a.py"
+            file.write_text("if :\n    pass\n# noqa: T123\n", encoding="utf-8")
+            rows = _policy_tampering(repo, "origin/main")
+            self.assertTrue(any(row["kind"] == "added-suppression" for row in rows))
+
+    def test_line_splitting_matches_regex_engine_lf_semantics(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            file = Path(temp) / "lines.txt"
+            file.write_bytes("one\ftwo\rthree\n".encode("utf-8"))
+            self.assertEqual(_read_scannable_lines(file), ["one\ftwo\rthree", ""])
+
+    def test_readonly_git_metadata_uses_cleaned_local_clone(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            repo = Path(temp)
+            base = make_repo(repo)
+            with patch("sins.git_tools.os.access", return_value=False):
+                with self.assertRaisesRegex(RuntimeError, "forced failure"):
+                    with worktree(repo, base) as snapshot:
+                        self.assertTrue((snapshot / "a.py").exists())
+                        raise RuntimeError("forced failure")
+                self.assertFalse(snapshot.parent.exists())
+
+    def test_policy_symlinks_are_flagged_for_tracked_and_untracked_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            repo = root / "repo"
+            repo.mkdir()
+            make_repo(repo)
+            sins = repo / ".sins"
+            rules = sins / "rules"
+            rules.mkdir(parents=True)
+            rule = rules / "local.toml"
+            rule.write_text('id = "local"\n', encoding="utf-8")
+            git(repo, "add", ".sins/rules/local.toml")
+            git(repo, "commit", "-m", "add rule")
+            git(repo, "update-ref", "refs/remotes/origin/main", git(repo, "rev-parse", "HEAD"))
+            outside = root / "policy.toml"
+            outside.write_text('[sins."py-bare-except"]\nenabled = false\n', encoding="utf-8")
+            (sins / "policy.toml").symlink_to(outside)
+            self.assertTrue(any(row["path"] == ".sins/policy.toml"
+                                for row in _policy_tampering(repo, "origin/main")))
+            (sins / "policy.toml").unlink()
+            rule.unlink()
+            rule.symlink_to(outside)
+            self.assertTrue(any("symlink" in row["detail"]
+                                for row in _policy_tampering(repo, "origin/main")))
+
     def test_diff_default_merge_base_preserves_dirty_tree_and_worktrees(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             repo = Path(temp)

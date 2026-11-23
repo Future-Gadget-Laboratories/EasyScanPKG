@@ -111,7 +111,7 @@ def worktree(repo: Path, commit: str) -> AbstractContextManager[Path]:
                     self.is_worktree = True
                 else:
                     self._clone_snapshot(repo, revision)
-            except Exception:
+            except BaseException:
                 self.temp.cleanup()
                 raise
             return self.path
@@ -124,7 +124,9 @@ def worktree(repo: Path, commit: str) -> AbstractContextManager[Path]:
 
         def _clone_snapshot(self, source: Path, revision: str) -> None:
             """Materialize a local detached clone when source git metadata is read-only."""
-            git(source, "clone", "--quiet", "--shared", "--no-checkout", str(source), str(self.path))
+            local_source = source.resolve()
+            git(local_source, "clone", "--quiet", "--shared", "--no-checkout", "--",
+                str(local_source), str(self.path))
             git(self.path, "checkout", "--quiet", "--detach", revision)
     return Snapshot()
 
@@ -134,4 +136,5 @@ def _worktree_metadata_writable(repo: Path) -> bool:
     common = Path(git(repo, "rev-parse", "--git-common-dir").stdout.strip())
     if not common.is_absolute():
         common = repo / common
-    return os.access(common, os.W_OK)
+    worktrees_dir = common / "worktrees"
+    return os.access(worktrees_dir if worktrees_dir.exists() else common, os.W_OK)

@@ -88,6 +88,10 @@ class PolicyTests(unittest.TestCase):
             rc, output = run("scan", "--repo", str(repo), "--rule", "cpp-usleep", "--format", "json")
             self.assertEqual(rc, 0)
             self.assertTrue(json.loads(output)["findings"][0]["forgiven"])
+            (repo / "a.py").write_text("except:  # //forgive me\n", encoding="utf-8")
+            rc, output = run("scan", "--repo", str(repo), "--rule", "py-bare-except", "--format", "json")
+            self.assertEqual(rc, 0)
+            self.assertFalse(json.loads(output)["findings"][0]["forgiven"])
 
     def test_trailing_comment_does_not_forgive_following_line(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
