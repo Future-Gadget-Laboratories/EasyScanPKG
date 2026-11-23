@@ -5,7 +5,6 @@ description = "usleep is non-portable; prefer a typed duration and thread sleep.
 language = "cpp"
 severity = "minor"
 mortal = false
-mortal_threshold = 0
 engine = "regex"
 tags = ["portability"]
 

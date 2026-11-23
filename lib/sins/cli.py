@@ -11,7 +11,7 @@ from pathlib import Path
 
 from . import RULES_VERSION
 from .exitcodes import ERROR, OK, select_exit_code
-from .regex_engine import scan_rule
+from .regex_engine import _included, scan_rule
 from .report import make_report, text_report, write_json
 from .rules import Rule, RuleError, load_rules
 
@@ -49,6 +49,8 @@ def _rules(repo: Path, dirs: list[Path], selected: list[str]) -> list[Rule]:
 
 
 def _scan(args: argparse.Namespace) -> int:
+    if args.fail_on == "new":
+        raise RuleError("--fail-on new is not implemented until S3")
     repo = args.repo.resolve()
     if not repo.is_dir():
         raise RuleError(f"{repo}: repo: directory does not exist or is unreadable")
@@ -57,14 +59,15 @@ def _scan(args: argparse.Namespace) -> int:
     report = make_report(repo, rules, findings)
     if args.json_out:
         write_json(report, args.json_out)
-    if args.format == "json":
+    if args.json_out == "-":
+        pass
+    elif args.format == "json":
         print(json.dumps(report, indent=2))
-    elif not args.json_out:
+    else:
         print(text_report(report))
-    if args.fail_on == "new":
-        raise RuleError("--fail-on new is not implemented until S3")
     failed = any((rule.mortal and any(f.sin == rule.id and not f.forgiven for f in findings)) or
-                 (not rule.mortal and sum(f.sin == rule.id and not f.forgiven for f in findings) > rule.threshold)
+                 (not rule.mortal and rule.threshold is not None and
+                  sum(f.sin == rule.id and not f.forgiven for f in findings) > rule.threshold)
                  for rule in rules) if args.fail_on == "mortal" else any(not item.forgiven for item in findings)
     return select_exit_code(findings=failed)
 
@@ -73,12 +76,35 @@ def _suffix(language: str) -> str:
     return {"python": ".py", "cpp": ".cpp", "text": ".txt"}.get(language, ".txt")
 
 
+def _example_path(rule: Rule) -> Path:
+    """Choose a synthetic filename that matches the rule's include globs."""
+    default_path = "example" + _suffix(rule.language)
+    if _included(default_path, rule):
+        return Path(default_path)
+    for pattern in rule.include:
+        cleaned = pattern.strip("/")
+        if cleaned.endswith("/"):
+            cleaned += default_path
+        parts = []
+        for part in cleaned.split("/"):
+            if part == "**":
+                parts.append("sample")
+            else:
+                parts.append(re.sub(r"\[[^\]]+\]", "a", part).replace("*", "example").replace("?", "a"))
+        candidate = "/".join(parts)
+        if candidate and _included(candidate, rule):
+            return Path(candidate)
+    return Path(default_path)
+
+
 def _run_examples(rule: Rule) -> tuple[bool, str]:
     with tempfile.TemporaryDirectory(prefix="sins-test-") as folder:
         repo = Path(folder)
+        relative = _example_path(rule)
 
         def count(text: str) -> int:
-            file = repo / ("example" + _suffix(rule.language))
+            file = repo / relative
+            file.parent.mkdir(parents=True, exist_ok=True)
             file.write_text(text, encoding="utf-8")
             try:
                 return len(scan_rule(repo, rule))
@@ -109,7 +135,10 @@ def _test(args: argparse.Namespace) -> int:
 
 
 def _list(args: argparse.Namespace) -> int:
-    for rule in _rules(args.repo.resolve(), args.rules_dir, args.rule):
+    repo = args.repo.resolve()
+    if not repo.is_dir():
+        raise RuleError(f"{repo}: repo: directory does not exist or is unreadable")
+    for rule in load_rules(repo, args.rules_dir, args.rule, require_implemented=False):
         print(f"{rule.id}\t{rule.language}\t{rule.engine}\t{rule.severity}\t"
               f"{'yes' if rule.mortal else 'no'}\t{rule.phrase}")
     return OK
@@ -120,22 +149,21 @@ def _new(args: argparse.Namespace) -> int:
         raise RuleError("--language: expected one language identifier")
     if args.engine not in {"regex", "ast-grep", "opengrep", "paladin", "external"}:
         raise RuleError(f"--engine: unknown engine {args.engine!r}")
-    target_dir = args.out / args.language
-    target = target_dir / f"{args.id}.toml"
-    if target.exists():
-        raise RuleError(f"{target}: refusing to overwrite existing rule")
     if not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", args.id):
         raise RuleError("id: must be kebab-case")
     if args.engine != "regex":
         raise RuleError(f"engine {args.engine!r} is recognized but not implemented in S1")
+    target_dir = args.out / args.language
+    target = target_dir / f"{args.id}.toml"
+    if target.exists() or target.is_symlink():
+        raise RuleError(f"{target}: refusing to overwrite existing rule")
     content = f'''id = "{args.id}"
 version = 1
 phrase = "replace with a concise phrase"
-description = "TODO: describe the sin"
+description = "TODO (owner): describe the sin"
 language = "{args.language}"
 severity = "minor"
 mortal = false
-mortal_threshold = 0
 engine = "regex"
 
 [paths]

@@ -5,7 +5,6 @@ description = "Bare except clauses can swallow process-control exceptions."
 language = "python"
 severity = "major"
 mortal = false
-mortal_threshold = 0
 engine = "regex"
 tags = ["reliability"]
 

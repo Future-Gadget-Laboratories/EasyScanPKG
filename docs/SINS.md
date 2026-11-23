@@ -44,7 +44,8 @@ good = ["try:\n    work()\nexcept ValueError:\n    pass\n"]
 `examples.bad` and `examples.good` are required non-empty string lists. A
 rewrite fix also needs one clean `examples.fixed` item per bad example. Severity
 and fix metadata are descriptive in S1. A mortal finding blocks; a venial sin
-blocks only when its unforgiven count exceeds `mortal_threshold` (default 0).
+blocks only when its unforgiven count exceeds `mortal_threshold`. If omitted,
+the threshold is unlimited; set it explicitly (including `0`) to enable a cap.
 Regex matching uses Python `re` with MULTILINE. Files over 2 MiB, files with a
 NUL byte in the first 8 KiB, and common generated/build directories are skipped.
 

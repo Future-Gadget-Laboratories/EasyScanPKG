@@ -18,7 +18,7 @@ def make_report(repo: Path, rules: list[Rule], findings: list[Finding]) -> dict[
     """Build the stable report schema and internally consistent totals."""
     try:
         ref = subprocess.run(["git", "-C", str(repo), "rev-parse", "--short", "HEAD"],
-                             capture_output=True, text=True, check=True).stdout.strip()
+                             capture_output=True, text=True, check=True).stdout.strip() or None
     except (OSError, subprocess.CalledProcessError):
         ref = None
     by_rule: dict[str, list[Finding]] = {rule.id: [] for rule in rules}
@@ -33,11 +33,11 @@ def make_report(repo: Path, rules: list[Rule], findings: list[Finding]) -> dict[
                      "count_forgiven": sum(item.forgiven for item in entries),
                      "count_unforgiven": sum(not item.forgiven for item in entries),
                      "by_path": dict(sorted(paths.items())),
-                     "fixable": "auto" if rule.fix_kind == "rewrite" else
-                     "template" if rule.fix_kind == "template" else "manual"})
+                     "fixable": {"rewrite": "auto", "template": "template"}.get(rule.fix_kind or "", "manual")})
     unforgiven = sum(not item.forgiven for item in findings)
     over = sum(bool((entry["mortal"] and entry["count_unforgiven"]) or
-                    (not entry["mortal"] and entry["count_unforgiven"] > entry["threshold"])) for entry in sins)
+                    (not entry["mortal"] and entry["threshold"] is not None and
+                     entry["count_unforgiven"] > entry["threshold"])) for entry in sins)
     return {"schema": "fgl-sins/report@1", "repo": str(repo), "ref": ref,
             "rules_version": RULES_VERSION, "generated_at": datetime.now(timezone.utc).isoformat(),
             "engine_versions": {"regex": "python-re"},
@@ -56,7 +56,8 @@ def text_report(report: dict[str, Any]) -> str:
     for entry in sorted(report["sins"], key=lambda item: (-item["count_unforgiven"], item["id"])):
         tops = ", ".join(f"{path} ({count})" for path, count in
                           sorted(entry["by_path"].items(), key=lambda item: (-item[1], item[0]))[:3]) or "-"
-        lines.append(f"{entry['id']} | {entry['count_unforgiven']} | {entry['threshold']} | "
+        threshold = "∞" if entry["threshold"] is None else str(entry["threshold"])
+        lines.append(f"{entry['id']} | {entry['count_unforgiven']} | {threshold} | "
                      f"{'yes' if entry['mortal'] else 'no'} | {entry['fixable']} | {tops}")
     return "\n".join(lines)
 

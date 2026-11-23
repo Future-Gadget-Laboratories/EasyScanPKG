@@ -5,7 +5,6 @@ description = "TODO notes should name the person or role responsible in parenthe
 language = "text"
 severity = "minor"
 mortal = false
-mortal_threshold = 0
 engine = "regex"
 tags = ["maintenance"]
 

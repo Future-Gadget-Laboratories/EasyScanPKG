@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 import sys
 
@@ -29,6 +30,20 @@ class ReportTests(unittest.TestCase):
             self.assertEqual(report["totals"]["unforgiven"], 2)
             self.assertEqual(report["totals"]["mortal_over"], 1)
             self.assertIn("SIN | COUNT | THRESH", text_report(report))
+
+    def test_fixable_metadata_and_unlimited_threshold(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "rule.toml"
+            path.write_text('''id="sample-rule"\nversion=1\nphrase="avoid sample"\ndescription="sample"\nlanguage="text"\nseverity="minor"\nmortal=false\nengine="regex"\n[match]\npattern="bad"\n[examples]\nbad=["bad"]\ngood=["good"]\n''', encoding="utf-8")
+            rule = load_rule(path)
+            rules = [rule, replace(rule, id="template-rule", fix_kind="template"),
+                     replace(rule, id="rewrite-rule", fix_kind="rewrite")]
+            report = make_report(Path(tmp), rules, [])
+            entries = {entry["id"]: entry for entry in report["sins"]}
+            self.assertIsNone(entries["sample-rule"]["threshold"])
+            self.assertEqual(entries["sample-rule"]["fixable"], "manual")
+            self.assertEqual(entries["template-rule"]["fixable"], "template")
+            self.assertEqual(entries["rewrite-rule"]["fixable"], "auto")
 
 
 if __name__ == "__main__":
