@@ -101,12 +101,12 @@ def fingerprint(sin_id: str, path: str, span: str, anchor: str) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
 
 
-_FORGIVE_MARKER = re.compile(r"sins:[ \t]*forgive[ \t]+")
+_FORGIVE_MARKER = re.compile(r"sins:\s*forgive\s+")
 _SIN_ID = re.compile(r"[a-z0-9_]+(?:-[a-z0-9_]+)*")
 
 
 def _parse_forgiveness(comment: str) -> tuple[set[str], str] | None:
-    """Split `sins: forgive <id[,id...]> -- <reason>` without a backtracking regex."""
+    """Split `sins: forgive <id[,id...]> -- <reason>` using only linear-time patterns."""
     marker = _FORGIVE_MARKER.search(comment)
     if marker is None:
         return None

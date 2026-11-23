@@ -27,7 +27,8 @@ class ParseForgivenessTests(unittest.TestCase):
         self.assertIsNone(_parse_forgiveness("sins: forgive Bad_ID! -- reason"))
 
     def test_long_input_is_fast(self) -> None:
-        self.assertIsNone(_parse_forgiveness("sins: forgive " + "a-" * 20000))
+        self.assertIsNone(_parse_forgiveness("sins: forgive " + "a-" * 20000 + "! -- reason"))
+        self.assertEqual(_parse_forgiveness("sins: forgive " + "a-" * 20000 + "a -- reason")[1], "reason")
 
 
 if __name__ == "__main__":
