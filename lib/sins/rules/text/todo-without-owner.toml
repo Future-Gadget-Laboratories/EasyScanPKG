@@ -1,0 +1,22 @@
+id = "todo-without-owner"
+version = 1
+phrase = "leave TODO notes without an owner"
+description = "TODO notes should name the person or role responsible in parentheses."
+language = "text"
+severity = "minor"
+mortal = false
+mortal_threshold = 0
+engine = "regex"
+tags = ["maintenance"]
+
+[paths]
+include = ["**/*.py", "**/*.cpp", "**/*.cc", "**/*.h", "**/*.hpp", "**/*.md", "**/*.sh", "**/*.toml", "**/*.yml", "**/*.yaml", "**/*.txt"]
+exclude = []
+
+[match]
+pattern = "\\bTODO\\b(?!\\s*\\([^)]+\\))"
+flags = "IGNORECASE"
+
+[examples]
+bad = ["# TODO: finish this\n"]
+good = ["# TODO (Alice): finish this\n"]
