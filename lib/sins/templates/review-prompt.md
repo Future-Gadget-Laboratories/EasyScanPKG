@@ -39,4 +39,4 @@ Use relative repository paths. Set `line` to a 1-based line or null. Explain bot
 }
 ```
 
-For `unified_diff`, include `diff`; for `replacement`, include `replacement`; for `instructions`, include non-empty `steps`. Only fields relevant to the selected kind need to be present.
+For `unified_diff`, include `diff`; for `replacement`, include `replacement`; for `instructions`, include non-empty `steps`. Include only fields relevant to the selected kind (omit unused `diff`, `replacement`, or `steps` fields).
