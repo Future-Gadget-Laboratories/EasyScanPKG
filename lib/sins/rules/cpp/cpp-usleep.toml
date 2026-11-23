@@ -1,0 +1,20 @@
+id = "cpp-usleep"
+version = 1
+phrase = "use usleep for thread delays"
+description = "usleep is non-portable; prefer a typed duration and thread sleep."
+language = "cpp"
+severity = "minor"
+mortal = false
+engine = "regex"
+tags = ["portability"]
+
+[paths]
+include = ["**/*.cpp", "**/*.cc", "**/*.h", "**/*.hpp"]
+exclude = []
+
+[match]
+pattern = "\\busleep\\s*\\("
+
+[examples]
+bad = ["usleep(1000);\n"]
+good = ["sleep_for(1ms);\n"]
