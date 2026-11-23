@@ -13,7 +13,7 @@ include = ["**/*.cpp", "**/*.cc", "**/*.h", "**/*.hpp"]
 exclude = []
 
 [match]
-rule = { pattern = "usleep($$$ARGS)" }
+rule = { any = [{ pattern = "usleep($$$ARGS)" }, { kind = "call_expression", has = { kind = "qualified_identifier", regex = "^::usleep$" } }] }
 
 [examples]
 bad = ["usleep(1000);\n"]

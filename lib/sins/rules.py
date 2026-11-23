@@ -126,8 +126,10 @@ def _validate_fix(fix: dict[str, Any], path: Path) -> tuple[str | None, str | No
     kind, template = fix.get("kind"), fix.get("template")
     if kind is not None and (not isinstance(kind, str) or kind not in {"template", "rewrite"}):
         raise _fail(path, "fix.kind", "must be template or rewrite")
-    if kind and kind == "template" and (not isinstance(template, str) or not template):
+    if kind == "template" and (not isinstance(template, str) or not template):
         raise _fail(path, "fix.template", "is required when fix.kind is set")
+    if template is not None and (not isinstance(template, str) or not template):
+        raise _fail(path, "fix.template", "must be a non-empty string")
     if not kind and template is not None:
         raise _fail(path, "fix.kind", "is required when fix.template is set")
     hint = fix.get("fix_hint")
@@ -168,6 +170,8 @@ def load_rule(path: Path) -> Rule:
     good = _strings(examples.get("good"), path, "examples.good", required=True)
     fixed = _strings(examples.get("fixed"), path, "examples.fixed")
     fix_kind, template, fix_hint = _validate_fix(fix, path)
+    if fix_kind == "rewrite" and not template and rule_id != "py-open-without-encoding":
+        raise _fail(path, "fix.template", "is required for rewrite fixes")
     if fix_kind == "rewrite" and (len(fixed) != len(bad) or not fixed):
         raise _fail(path, "examples.fixed", "rewrite requires one fixed example per bad example")
     if fix_kind != "rewrite" and "fixed" in examples:

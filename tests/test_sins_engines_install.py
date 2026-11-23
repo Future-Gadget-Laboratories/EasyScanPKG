@@ -65,6 +65,37 @@ class EngineInstallTests(unittest.TestCase):
             self.assertFalse((root / "ast-grep").exists())
             self.assertFalse((root / "installed").exists())
 
+    def test_file_url_requires_opt_in_and_http_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="sins-install-scheme-") as folder:
+            path = Path(folder) / "fixture.zip"
+            path.write_bytes(b"fixture")
+            with patch.dict(os.environ, {}, clear=False):
+                os.environ.pop("SINS_ALLOW_FILE_URL", None)
+                with self.assertRaisesRegex(ast_grep.EngineError, "HTTPS"):
+                    ast_grep._download(path.as_uri())
+            with patch.dict(os.environ, {"SINS_ALLOW_FILE_URL": "1"}):
+                self.assertEqual(ast_grep._download(path.as_uri()), b"fixture")
+                with self.assertRaisesRegex(ast_grep.EngineError, "HTTPS"):
+                    ast_grep._download("http://example.invalid/ast-grep.zip")
+
+    def test_install_replaces_existing_directory(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="sins-install-replace-") as folder:
+            root = Path(folder)
+            destination = root / "installed"
+            destination.mkdir()
+            (destination / "old-file").write_text("old", encoding="utf-8")
+            payload = archive({"ast-grep": b"new fixture"})
+            zip_path = root / "fixture.zip"
+            zip_path.write_bytes(payload)
+            platform_key = ast_grep._platform_key()
+            fake_pins = {"version": "0.51.3", "platforms": {platform_key: {
+                "url": zip_path.as_uri(), "zip_sha256": hashlib.sha256(payload).hexdigest()}}}
+            with patch.dict(os.environ, {"SINS_ALLOW_FILE_URL": "1"}), patch.object(
+                    ast_grep, "_pins", return_value=fake_pins):
+                binary = ast_grep.install(destination)
+            self.assertEqual(binary.read_bytes(), b"new fixture")
+            self.assertFalse((destination / "old-file").exists())
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import json
+import hashlib
 import shutil
 import sys
 import tempfile
@@ -61,6 +62,71 @@ class AstGrepIntegrationTests(unittest.TestCase):
             self.assertEqual(len(findings), 1)
             self.assertEqual(findings[0].line, 3)
 
+    def test_usleep_matches_global_namespace_call(self) -> None:
+        rule = load_rule(Path(__file__).resolve().parents[1] / "lib/sins/rules/cpp/cpp-usleep.toml")
+        with tempfile.TemporaryDirectory(prefix="sins-usleep-global-") as folder:
+            repo = Path(folder)
+            (repo / "fixture.cpp").write_text("void f() { ::usleep(3); }\n", encoding="utf-8")
+            self.assertEqual(len(ast_grep.scan_rule(repo, rule)), 1)
+
+    def test_ast_grep_fingerprint_survives_line_shift(self) -> None:
+        rule = load_rule(Path(__file__).resolve().parents[1] / "lib/sins/rules/cpp/cpp-usleep.toml")
+        with tempfile.TemporaryDirectory(prefix="sins-anchor-shift-") as folder:
+            repo = Path(folder)
+            path = repo / "fixture.cpp"
+            path.write_text("void f() {\n  usleep(3);\n}\n", encoding="utf-8")
+            first = ast_grep.scan_rule(repo, rule)[0]
+            path.write_text("\n\nvoid f() {\n  usleep(3);\n}\n", encoding="utf-8")
+            shifted = ast_grep.scan_rule(repo, rule)[0]
+            self.assertEqual(first.fingerprint, shifted.fingerprint)
+
+    def test_open_without_encoding_only_checks_outer_call_and_supported_args(self) -> None:
+        self.assertFalse(ast_grep._open_needs_encoding("open('a', encoding=open('b').read())"))
+        self.assertFalse(ast_grep._open_needs_encoding("open('a', 'rb', opener=helper(open('b')))"))
+        self.assertTrue(ast_grep._open_needs_encoding("open('a', 'r', 1)"))
+        self.assertFalse(ast_grep._open_needs_encoding("open(*args)"))
+
+    def test_open_with_trailing_comma_comment_rewrites_validly(self) -> None:
+        source = "open(\n    'file',  # keep this comma\n)\n"
+        rewritten = ast_grep.rewrite_text_non_overlapping(
+            load_rule(Path(__file__).resolve().parents[1] / "lib/sins/rules/python/py-open-without-encoding.toml"),
+            source)[0]
+        import ast
+        ast.parse(rewritten)
+        self.assertIn("'file',  # keep this comma\n    encoding=", rewritten)
+
+    def test_relative_repo_path_scans(self) -> None:
+        rule = load_rule(Path(__file__).resolve().parents[1] / "lib/sins/rules/python/py-bare-except.toml")
+        with tempfile.TemporaryDirectory(prefix="sins-relative-repo-") as folder:
+            previous = Path.cwd()
+            try:
+                os.chdir(folder)
+                repo = Path("nested/repo")
+                repo.mkdir(parents=True)
+                (repo / "fixture.py").write_text("try:\n pass\nexcept:\n pass\n", encoding="utf-8")
+                self.assertEqual(len(ast_grep.scan_rule(repo, rule)), 1)
+            finally:
+                os.chdir(previous)
+
+    def test_parse_validation_rejects_cpp_error_nodes(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="sins-cpp-parse-") as folder:
+            path = Path(folder) / "bad.cpp"
+            path.write_text("void f( {\n", encoding="utf-8")
+            rule = load_rule(Path(__file__).resolve().parents[1] / "lib/sins/rules/cpp/cpp-usleep.toml")
+            with self.assertRaisesRegex(ast_grep.EngineError, "ERROR|MISSING"):
+                ast_grep.validate_parse(rule, path)
+
+    def test_open_without_encoding_skips_binary_and_encoded_calls(self) -> None:
+        rule = load_rule(Path(__file__).resolve().parents[1] / "lib/sins/rules/python/py-open-without-encoding.toml")
+        with tempfile.TemporaryDirectory(prefix="sins-open-context-") as folder:
+            repo = Path(folder)
+            (repo / "fixture.py").write_text(
+                "open('a.bin', 'rb')\nopen('b.bin', mode='wb')\n"
+                "open('c.txt', encoding='utf-8')\nopen('d.txt')\n",
+                encoding="utf-8")
+            findings = ast_grep.scan_rule(repo, rule)
+            self.assertEqual([item.line for item in findings], [4])
+
     def test_bare_except_does_not_match_exception_class(self) -> None:
         rule = load_rule(Path(__file__).resolve().parents[1] / "lib/sins/rules/python/py-bare-except.toml")
         with tempfile.TemporaryDirectory(prefix="sins-except-context-") as folder:
@@ -95,7 +161,10 @@ class AstGrepIntegrationTests(unittest.TestCase):
                     ast_grep.resolve_binary()
             binary.write_text("#!/bin/sh\necho ast-grep 9.9.9\n", encoding="utf-8")
             binary.chmod(0o755)
-            with patch.dict(os.environ, {"SINS_AST_GREP": str(binary)}):
+            fake_pins = {"version": "0.51.3", "platforms": {ast_grep._platform_key(): {
+                "binary_sha256": hashlib.sha256(binary.read_bytes()).hexdigest()}}}
+            with patch.dict(os.environ, {"SINS_AST_GREP": str(binary)}), patch.object(
+                    ast_grep, "_pins", return_value=fake_pins):
                 with self.assertRaisesRegex(ast_grep.EngineError, "version"):
                     ast_grep.resolve_binary()
 
@@ -108,8 +177,11 @@ class AstGrepIntegrationTests(unittest.TestCase):
             fake = Path(folder) / "ast-grep"
             fake.write_text("#!/bin/sh\necho ast-grep 9.9.9\n", encoding="utf-8")
             fake.chmod(0o755)
+            fake_pins = {"version": "0.51.3", "platforms": {ast_grep._platform_key(): {
+                "binary_sha256": hashlib.sha256(fake.read_bytes()).hexdigest()}}}
             output = io.StringIO()
             with patch.dict(os.environ, {"SINS_AST_GREP": str(fake)}), \
+                    patch.object(ast_grep, "_pins", return_value=fake_pins), \
                     contextlib.redirect_stdout(output), contextlib.redirect_stderr(output):
                 code = main(["scan", "--repo", folder, "--rule", "py-bare-except",
                              "--format", "json"])
@@ -117,6 +189,7 @@ class AstGrepIntegrationTests(unittest.TestCase):
             self.assertIn("ast-grep", output.getvalue())
             report, _ = json.JSONDecoder().raw_decode(output.getvalue())
             self.assertEqual(report["engine_errors"][0]["sin"], "py-bare-except")
+            self.assertEqual(report["engine_versions"]["ast-grep"], "unavailable")
 
 
 if __name__ == "__main__":

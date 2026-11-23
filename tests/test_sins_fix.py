@@ -72,6 +72,19 @@ class FixCommandTests(unittest.TestCase):
             self.assertIn("dirty files", output)
             self.assertNotIn("encoding=", target.read_text())
 
+    def test_apply_refuses_untracked_ignored_file(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="sins-fix-ignored-") as folder:
+            repo = self._repo(folder)
+            (repo / ".gitignore").write_text("ignored.py\n", encoding="utf-8")
+            git(repo, "add", ".gitignore")
+            git(repo, "commit", "-qm", "ignore rule")
+            target = repo / "ignored.py"
+            target.write_text("open('ignored.txt')\n", encoding="utf-8")
+            code, output = invoke("fix", "--repo", str(repo), "--sin", "py-open-without-encoding", "--apply")
+            self.assertEqual(code, 2)
+            self.assertIn("dirty files", output)
+            self.assertNotIn("encoding=", target.read_text())
+
     def test_non_overlapping_open_rewrite_applies_beside_overlap(self) -> None:
         with tempfile.TemporaryDirectory(prefix="sins-fix-mixed-overlap-") as folder:
             repo = self._repo(folder)
@@ -146,6 +159,54 @@ class FixCommandTests(unittest.TestCase):
             self.assertEqual(code, 0, output)
             self.assertIn("rolled_back=1", output)
             self.assertEqual(source.read_text(encoding="utf-8"), original)
+
+    def test_cpp_parse_error_rewrite_is_rolled_back(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="sins-cpp-fix-rollback-") as folder:
+            repo = Path(folder) / "repo"
+            repo.mkdir()
+            rules = repo / ".sins/rules"
+            rules.mkdir(parents=True)
+            (rules / "invalid-cpp.toml").write_text(
+                '''id = "invalid-cpp"\nversion = 1\nphrase = "rewrite test call"\n'''
+                '''description = "test"\nlanguage = "cpp"\nseverity = "minor"\nmortal = false\n'''
+                '''engine = "ast-grep"\n[paths]\ninclude = ["**/*.cpp"]\n[match.rule]\n'''
+                '''pattern = "bad_call()"\n[fix]\nkind = "rewrite"\ntemplate = ")"\n'''
+                '''[examples]\nbad = ["bad_call();"]\ngood = ["safe_call();"]\nfixed = [");"]\n''',
+                encoding="utf-8")
+            source = repo / "bad.cpp"
+            original = "void f() { bad_call(); }\n"
+            source.write_text(original, encoding="utf-8")
+            code, output = invoke("fix", "--repo", str(repo), "--sin", "invalid-cpp", "--apply")
+            self.assertEqual(code, 0, output)
+            self.assertIn("rolled_back=1", output)
+            self.assertEqual(source.read_text(encoding="utf-8"), original)
+
+    def test_generic_rewrite_fixes_independent_match_beside_overlap(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="sins-generic-mixed-") as folder:
+            repo = Path(folder) / "repo"
+            repo.mkdir()
+            rules = repo / ".sins/rules"
+            rules.mkdir(parents=True)
+            (rules / "nested.toml").write_text(
+                '''id = "nested-call"\nversion = 1\nphrase = "use renamed call"\n'''
+                '''description = "test"\nlanguage = "cpp"\nseverity = "minor"\nmortal = false\n'''
+                '''engine = "ast-grep"\n[paths]\ninclude = ["**/*.cpp"]\n[match.rule]\n'''
+                '''pattern = "foo($$$ARGS)"\n[fix]\nkind = "rewrite"\ntemplate = "bar($$$ARGS)"\n'''
+                '''[examples]\nbad = ["foo();"]\ngood = ["baz();"]\nfixed = ["bar();"]\n''',
+                encoding="utf-8")
+            source = repo / "calls.cpp"
+            original = "void f() { foo(foo()); foo(); }\n"
+            source.write_text(original, encoding="utf-8")
+            git(repo, "init", "-q")
+            git(repo, "config", "user.email", "sins-test@example.invalid")
+            git(repo, "config", "user.name", "sins tests")
+            git(repo, "add", "calls.cpp")
+            git(repo, "commit", "-qm", "fixture")
+            code, output = invoke("fix", "--repo", str(repo), "--sin", "nested-call", "--apply")
+            self.assertEqual(code, 0, output)
+            self.assertIn("skipped=1", output)
+            self.assertIn("foo(foo())", source.read_text(encoding="utf-8"))
+            self.assertIn("bar()", source.read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":

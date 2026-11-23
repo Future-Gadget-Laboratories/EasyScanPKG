@@ -8,16 +8,18 @@ import ast
 import json
 import os
 import platform
+import shutil
 import stat
 import subprocess
 import tempfile
+import tokenize
 import tomllib
 import urllib.request
 import zipfile
 from pathlib import Path
 from typing import Any
 
-from ..policy import fingerprint
+from ..policy import context_anchor, fingerprint
 from ..regex_engine import Finding, _glob_match, _included, _is_skipped_path
 from ..rules import Rule, RuleError
 
@@ -81,18 +83,24 @@ def resolve_binary() -> Path:
     if not binary.is_file():
         raise EngineError(f"ast-grep not installed at {binary}; run `sins engines install`")
     manifest = _pins()
+    try:
+        actual_hash = _sha256(binary)
+    except OSError as exc:
+        raise EngineError(f"ast-grep cannot be read at {binary}; run `sins engines install`: {exc}") from exc
+    expected_hash = manifest["platforms"].get(_platform_key(), {}).get("binary_sha256")
+    stamp = binary.parent / "ast-grep.sha256"
+    if expected_hash is None and stamp.is_file():
+        try:
+            expected_hash = stamp.read_text(encoding="ascii").strip()
+        except (OSError, UnicodeDecodeError) as exc:
+            raise EngineError(f"ast-grep stamp is unreadable at {stamp}; run `sins engines install`: {exc}") from exc
+    if expected_hash is None or actual_hash != expected_hash:
+        raise EngineError(f"ast-grep sha256 mismatch or missing stamp for {binary}; run `sins engines install`")
     expected_version = manifest["version"]
     actual_version = _version(binary)
     if actual_version != expected_version:
         raise EngineError(f"ast-grep version {actual_version!r} does not match pinned {expected_version}; "
                           "run `sins engines install`")
-    actual_hash = _sha256(binary)
-    expected_hash = manifest["platforms"].get(_platform_key(), {}).get("binary_sha256")
-    stamp = binary.parent / "ast-grep.sha256"
-    if expected_hash is None and stamp.is_file():
-        expected_hash = stamp.read_text(encoding="ascii").strip()
-    if expected_hash is None or actual_hash != expected_hash:
-        raise EngineError(f"ast-grep sha256 mismatch or missing stamp for {binary}; run `sins engines install`")
     return binary
 
 
@@ -105,7 +113,9 @@ def _download(url: str) -> bytes:
         raise EngineError("ast-grep installer accepts HTTPS URLs only")
     try:
         if parsed.scheme == "file":
-            response_context = urllib.request.urlopen(url, timeout=60)
+            from urllib.request import url2pathname
+            local_path = Path(url2pathname(parsed.path))
+            return local_path.read_bytes()[:100 * 1024 * 1024 + 1]
         else:
             class HttpsRedirectHandler(urllib.request.HTTPRedirectHandler):
                 """Reject redirects that downgrade a pinned HTTPS download."""
@@ -136,30 +146,28 @@ def install(dest: Path | None = None) -> Path:
     destination = pinned_directory(dest)
     destination.parent.mkdir(parents=True, exist_ok=True)
     stage = Path(tempfile.mkdtemp(prefix=".ast-grep-install-", dir=destination.parent))
+    binary = stage / "ast-grep"
     try:
         try:
             with zipfile.ZipFile(io.BytesIO(payload)) as bundle:
                 members = [item for item in bundle.infolist() if item.filename == "ast-grep"]
                 if len(members) != 1 or members[0].is_dir() or members[0].file_size > 100 * 1024 * 1024:
                     raise EngineError("ast-grep archive must contain exactly one ast-grep member")
-                binary = stage / "ast-grep"
                 binary.write_bytes(bundle.read(members[0]))
         except (zipfile.BadZipFile, OSError, KeyError) as exc:
             raise EngineError(f"ast-grep archive is invalid: {exc}") from exc
-        binary = stage / "ast-grep"
         digest = _sha256(binary)
         expected_binary = platform_data.get("binary_sha256")
         if expected_binary and digest != expected_binary:
             raise EngineError("ast-grep extracted binary sha256 mismatch")
         binary.chmod(0o755)
         (stage / "ast-grep.sha256").write_text(digest + "\n", encoding="ascii")
-        if destination.exists() or destination.is_symlink():
-            raise EngineError(f"refusing to replace existing engine directory: {destination}")
-        stage.rename(destination)
+        _replace_directory(stage, destination)
     except Exception:
-        for child in stage.iterdir():
-            child.unlink()
-        stage.rmdir()
+        if stage.exists():
+            for child in stage.iterdir():
+                child.unlink()
+            stage.rmdir()
         raise
     return destination / "ast-grep"
 
@@ -172,6 +180,25 @@ def status() -> dict[str, Any]:
         return {"path": str(pinned_directory() / "ast-grep"), "version": None,
                 "sha256": None, "hash_ok": False, "error": str(exc)}
     return {"path": str(binary), "version": _version(binary), "sha256": _sha256(binary), "hash_ok": True}
+
+
+def _replace_directory(stage: Path, destination: Path) -> None:
+    """Swap a staged engine into place and restore the previous install on failure."""
+    backup_root: Path | None = None
+    backup: Path | None = None
+    if destination.exists() or destination.is_symlink():
+        backup_root = Path(tempfile.mkdtemp(prefix=".ast-grep-backup-", dir=destination.parent))
+        backup = backup_root / destination.name
+        destination.rename(backup)
+    try:
+        stage.rename(destination)
+    except OSError:
+        if backup is not None and not destination.exists():
+            backup.rename(destination)
+            shutil.rmtree(backup_root)
+        raise
+    if backup_root is not None:
+        shutil.rmtree(backup_root)
 
 
 def _language(language: str) -> str:
@@ -191,19 +218,22 @@ def _eligible_files(repo: Path, rule: Rule, excludes: tuple[str, ...]) -> list[P
         for name in sorted(files):
             file = Path(directory) / name
             relative = file.relative_to(repo).as_posix()
-            if _included(relative, rule) and not any(_glob_match(relative, item) for item in excludes):
-                try:
-                    info = file.lstat()
-                    if not stat.S_ISREG(info.st_mode) or info.st_size > 2 * 1024 * 1024:
-                        continue
-                    with file.open("rb") as stream:
-                        if b"\0" in stream.read(8192):
-                            continue
-                    if info.st_size <= 2 * 1024 * 1024:
-                        selected.append(file)
-                except OSError:
-                    continue
+            if (_included(relative, rule) and not any(_glob_match(relative, item) for item in excludes)
+                    and _is_scannable_file(file)):
+                selected.append(file)
     return selected
+
+
+def _is_scannable_file(file: Path) -> bool:
+    """Return whether a path is a bounded, non-binary regular file."""
+    try:
+        info = file.lstat()
+        if not stat.S_ISREG(info.st_mode) or info.st_size > 2 * 1024 * 1024:
+            return False
+        with file.open("rb") as stream:
+            return b"\0" not in stream.read(8192)
+    except OSError:
+        return False
 
 
 def _invoke(binary: Path, repo: Path, rule: Rule, paths: list[Path]) -> list[dict[str, Any]]:
@@ -212,7 +242,7 @@ def _invoke(binary: Path, repo: Path, rule: Rule, paths: list[Path]) -> list[dic
     inline = json.dumps({"id": rule.id, "language": _language(rule.language), "rule": rule.ast_rule})
     for start in range(0, len(paths), CHUNK_SIZE):
         command = [str(binary), "scan", "--inline-rules", inline, "--json=stream", "--threads", "2", "--",
-                   *[str(path) for path in paths[start:start + CHUNK_SIZE]]]
+                   *[path.relative_to(repo).as_posix() for path in paths[start:start + CHUNK_SIZE]]]
         try:
             result = subprocess.run(command, cwd=repo, capture_output=True, text=True,
                                     timeout=TIMEOUT_SECONDS)
@@ -234,33 +264,45 @@ def _invoke(binary: Path, repo: Path, rule: Rule, paths: list[Path]) -> list[dic
 def scan_rule(repo: Path, rule: Rule, global_excludes: tuple[str, ...] = ()) -> list[Finding]:
     """Scan files with the pinned structural engine and normalize results."""
     binary = resolve_binary()
-    paths = _eligible_files(repo, rule, global_excludes)
-    rows = _invoke(binary, repo, rule, paths) if paths else []
-    findings: list[Finding] = []
-    for row in rows:
-        if not isinstance(row.get("file"), str) or not isinstance(row.get("range"), dict):
-            raise EngineError(f"ast-grep returned malformed location data for {rule.id}")
-        range_data = row["range"]
-        start, end = range_data.get("start"), range_data.get("end")
-        if not isinstance(start, dict) or not isinstance(end, dict):
-            raise EngineError(f"ast-grep returned malformed coordinates for {rule.id}")
-        coordinates = (start.get("line"), start.get("column"), end.get("line"), end.get("column"))
-        if any(not isinstance(value, int) or isinstance(value, bool) or value < 0 for value in coordinates):
-            raise EngineError(f"ast-grep returned malformed coordinates for {rule.id}")
-        if not isinstance(row.get("text"), str):
-            raise EngineError(f"ast-grep returned malformed match text for {rule.id}")
-        file = Path(row["file"]).resolve()
-        if not file.is_relative_to(repo.resolve()):
-            raise EngineError(f"ast-grep returned an out-of-repository path for {rule.id}")
-        relative = file.relative_to(repo.resolve()).as_posix()
-        matched = row["text"]
-        if rule.id == "py-open-without-encoding" and not _open_needs_encoding(matched):
-            continue
-        line, col = int(start.get("line", 0)) + 1, int(start.get("column", 0)) + 1
-        end_line, end_col = int(end.get("line", 0)) + 1, int(end.get("column", 0)) + 1
-        findings.append(Finding(rule.id, relative, line, col, end_line, end_col, rule.phrase, rule.severity,
-                                fingerprint=fingerprint(rule.id, relative, matched, "<ast-grep>")))
-    return findings
+    root = repo.resolve()
+    paths = _eligible_files(root, rule, global_excludes)
+    rows = _invoke(binary, root, rule, paths) if paths else []
+    return [finding for row in rows if (finding := _parse_finding(root, rule, row)) is not None]
+
+
+def scan_file(repo: Path, rule: Rule, path: Path) -> list[Finding]:
+    """Scan only one file after a rewrite has been applied."""
+    root = repo.resolve()
+    target = path.resolve()
+    if not target.is_relative_to(root):
+        raise EngineError(f"cannot scan out-of-repository file for {rule.id}")
+    rows = _invoke(resolve_binary(), root, rule, [target])
+    return [finding for row in rows if (finding := _parse_finding(root, rule, row)) is not None]
+
+
+def _parse_finding(repo: Path, rule: Rule, row: dict[str, Any]) -> Finding | None:
+    """Validate and normalize one ast-grep JSON match row."""
+    if not isinstance(row.get("file"), str) or not isinstance(row.get("range"), dict):
+        raise EngineError(f"ast-grep returned malformed location data for {rule.id}")
+    start, end = row["range"].get("start"), row["range"].get("end")
+    if not isinstance(start, dict) or not isinstance(end, dict):
+        raise EngineError(f"ast-grep returned malformed coordinates for {rule.id}")
+    coords = (start.get("line"), start.get("column"), end.get("line"), end.get("column"))
+    if any(not isinstance(value, int) or isinstance(value, bool) or value < 0 for value in coords):
+        raise EngineError(f"ast-grep returned malformed coordinates for {rule.id}")
+    matched = row.get("text")
+    if not isinstance(matched, str):
+        raise EngineError(f"ast-grep returned malformed match text for {rule.id}")
+    file = (repo / row["file"]).resolve()
+    if not file.is_relative_to(repo):
+        raise EngineError(f"ast-grep returned an out-of-repository path for {rule.id}")
+    relative = file.relative_to(repo).as_posix()
+    if rule.id == "py-open-without-encoding" and not _open_needs_encoding(matched):
+        return None
+    line, col, end_line, end_col = coords[0] + 1, coords[1] + 1, coords[2] + 1, coords[3] + 1
+    anchor = context_anchor(file.read_text(encoding="utf-8", errors="replace"), line)
+    return Finding(rule.id, relative, line, col, end_line, end_col, rule.phrase, rule.severity,
+                   fingerprint=fingerprint(rule.id, relative, matched, anchor))
 
 
 def validate_parse(rule: Rule, path: Path) -> None:
@@ -270,6 +312,23 @@ def validate_parse(rule: Rule, path: Path) -> None:
             ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         except (OSError, UnicodeError, SyntaxError) as exc:
             raise EngineError(f"ast-grep rewrite produced invalid Python in {path}: {exc}") from exc
+        return
+    binary = resolve_binary()
+    for kind in ("ERROR", "MISSING"):
+        inline = json.dumps({"id": "sins-parse-check", "language": _language(rule.language),
+                             "rule": {"kind": kind}})
+        try:
+            result = subprocess.run([str(binary), "scan", "--inline-rules", inline, "--json=stream",
+                                     "--threads", "2", "--", str(path)], cwd=path.parent,
+                                    capture_output=True, text=True, timeout=TIMEOUT_SECONDS)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise EngineError(f"ast-grep parse check failed for {path}: {exc}") from exc
+        if result.returncode != 0:
+            if kind == "MISSING" and "Invalid Kind" in result.stderr:
+                continue
+            raise EngineError(f"ast-grep parse check failed for {path}: {result.stderr.strip()}")
+        if result.stdout.strip():
+            raise EngineError(f"ast-grep rewrite produced {kind} parse node in {path}")
 
 
 def rewrite_text(rule: Rule, content: str) -> str:
@@ -298,10 +357,38 @@ def rewrite_text(rule: Rule, content: str) -> str:
 
 
 def rewrite_text_non_overlapping(rule: Rule, content: str) -> tuple[str, bool]:
-    """Rewrite independent py-open calls and report any overlapping call spans."""
+    """Rewrite independent matches and report overlapping source spans."""
     if rule.id != "py-open-without-encoding":
         return rewrite_text(rule, content), False
     return _rewrite_open_calls(content, skip_overlapping=True)
+
+
+def rewrite_match_spans(rule: Rule, content: str, findings: list[Finding],
+                        skipped: set[int]) -> tuple[str, bool]:
+    """Rewrite non-overlapping matched snippets while preserving skipped spans."""
+    lines = content.splitlines(keepends=True)
+    starts: list[int] = []
+    offset = 0
+    for line in lines:
+        starts.append(offset)
+        offset += len(line)
+    spans = [_finding_offsets(item, lines, starts) for item in findings]
+    output = content
+    for index in reversed(range(len(findings))):
+        if index in skipped:
+            continue
+        start, end = spans[index]
+        replacement = rewrite_text(rule, content[start:end])
+        output = output[:start] + replacement + output[end:]
+    return output, bool(skipped)
+
+
+def _finding_offsets(finding: Finding, lines: list[str], starts: list[int]) -> tuple[int, int]:
+    """Convert one-based UTF-8 byte coordinates to source string offsets."""
+    start_line, end_line = finding.line - 1, finding.end_line - 1
+    start_bytes = lines[start_line].encode("utf-8")[:finding.col - 1]
+    end_bytes = lines[end_line].encode("utf-8")[:finding.end_col - 1]
+    return starts[start_line] + len(start_bytes.decode("utf-8")), starts[end_line] + len(end_bytes.decode("utf-8"))
 
 
 def _open_needs_encoding(source: str) -> bool:
@@ -310,21 +397,24 @@ def _open_needs_encoding(source: str) -> bool:
         tree = ast.parse(source)
     except SyntaxError:
         return False
-    calls = [node for node in ast.walk(tree) if isinstance(node, ast.Call)]
-    for call in calls:
-        if not isinstance(call.func, ast.Name) or call.func.id != "open":
-            continue
-        if any(keyword.arg == "encoding" for keyword in call.keywords):
-            continue
-        mode_node = call.args[1] if len(call.args) > 1 else next(
-            (keyword.value for keyword in call.keywords if keyword.arg == "mode"), None)
-        if isinstance(mode_node, ast.Constant):
-            mode = mode_node.value
-            if isinstance(mode, str) and "b" in mode:
-                continue
-        if 1 <= len(call.args) <= 2 or any(keyword.arg == "file" for keyword in call.keywords):
-            return True
-    return False
+    if len(tree.body) != 1 or not isinstance(tree.body[0], ast.Expr):
+        return False
+    call = tree.body[0].value
+    return isinstance(call, ast.Call) and _call_needs_encoding(call)
+
+
+def _call_needs_encoding(call: ast.Call) -> bool:
+    """Return whether a single open call has a definite text mode without encoding."""
+    if not isinstance(call.func, ast.Name) or call.func.id != "open":
+        return False
+    if (any(isinstance(arg, ast.Starred) for arg in call.args) or len(call.args) >= 4
+            or any(keyword.arg in {None, "encoding"} for keyword in call.keywords)):
+        return False
+    mode = call.args[1] if len(call.args) > 1 else next(
+        (keyword.value for keyword in call.keywords if keyword.arg == "mode"), None)
+    if isinstance(mode, ast.Constant) and isinstance(mode.value, str) and "b" in mode.value:
+        return False
+    return bool(call.args) or any(keyword.arg == "file" for keyword in call.keywords)
 
 
 def _rewrite_open_calls(source: str, *, skip_overlapping: bool = False) -> tuple[str, bool]:
@@ -341,9 +431,7 @@ def _rewrite_open_calls(source: str, *, skip_overlapping: bool = False) -> tuple
         offset += len(line)
     calls: list[tuple[int, int, int]] = []
     for node in ast.walk(tree):
-        if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Name) or node.func.id != "open":
-            continue
-        if not _open_needs_encoding(ast.get_source_segment(source, node) or ""):
+        if not isinstance(node, ast.Call) or not _call_needs_encoding(node):
             continue
         start = _source_offset(source, lines, starts, node.lineno, node.col_offset)
         end = _source_offset(source, lines, starts, node.end_lineno, node.end_col_offset) - 1
@@ -356,10 +444,31 @@ def _rewrite_open_calls(source: str, *, skip_overlapping: bool = False) -> tuple
                   if not skip_overlapping or index not in overlapping]
     for position in sorted(set(insertions), reverse=True):
         prefix = source[:position]
-        trimmed = prefix.rstrip()
-        separator = "" if trimmed.endswith("(") else " " if trimmed.endswith(",") else ", "
+        separator = _open_separator(prefix)
         source = source[:position] + separator + 'encoding="utf-8"' + source[position:]
     return source, bool(overlapping)
+
+
+def _open_separator(prefix: str) -> str:
+    """Choose the argument separator before a closing parenthesis, ignoring comments."""
+    ignored = {tokenize.COMMENT, tokenize.NL, tokenize.NEWLINE, tokenize.INDENT,
+               tokenize.DEDENT, tokenize.ENCODING}
+    last = ""
+    try:
+        for token in tokenize.generate_tokens(io.StringIO(prefix).readline):
+            if token.type not in ignored:
+                last = token.string
+    except tokenize.TokenError:
+        pass
+    if last == "(":
+        return ""
+    if last == ",":
+        if prefix.endswith(("\n", "\r")):
+            lines = prefix.splitlines()
+            indentation = next((len(line) - len(line.lstrip()) for line in reversed(lines) if line.strip()), 0)
+            return " " * indentation
+        return "" if prefix.endswith((" ", "\t")) else " "
+    return ", "
 
 
 def _overlapping_calls(calls: list[tuple[int, int, int]]) -> set[int]:

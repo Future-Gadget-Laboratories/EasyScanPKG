@@ -484,7 +484,9 @@ def _scan_report(repo: Path, dirs: list[Path], selected: list[str]) -> dict:
     report = make_report(repo, effective, _forgive_findings(repo, effective, findings, policy.excludes))
     report["engine_errors"] = engine_errors
     if any(rule.engine == "ast-grep" for rule in effective):
-        report["engine_versions"]["ast-grep"] = "0.51.3"
+        engine_status = ast_grep.status()
+        report["engine_versions"]["ast-grep"] = (
+            engine_status["version"] if engine_status["hash_ok"] and engine_status["version"] else "unavailable")
     return report
 
 
@@ -598,6 +600,8 @@ def _run_examples(rule: Rule) -> tuple[bool, str]:
             if count(sample) != 0:
                 return False, f"good example {index} produced a finding"
         if rule.fix_kind == "rewrite":
+            if len(rule.fixed) != len(rule.bad):
+                return False, f"expected {len(rule.bad)} fixed example(s), found {len(rule.fixed)}"
             for index, sample in enumerate(rule.bad, start=1):
                 rewritten = _rewrite_text(rule, sample)
                 if rewritten != rule.fixed[index - 1]:
@@ -644,20 +648,25 @@ def _dirty_paths(repo: Path, relatives: set[str]) -> set[str]:
     """Return touched paths already modified, staged, or untracked-and-ignored."""
     dirty: set[str] = set()
     for relative in relatives:
-        state = git(repo, "status", "--porcelain", "--", relative, check=False).stdout
-        rows = [line for line in state.splitlines() if line]
+        status = git(repo, "status", "--porcelain", "--ignored", "--", relative, check=False)
+        if status.returncode != 0:
+            if "not a git repository" not in status.stderr.lower():
+                dirty.add(relative)
+            continue
+        rows = [line for line in status.stdout.splitlines() if line]
         if any(not row.startswith("?? ") for row in rows):
             dirty.add(relative)
-        elif rows:
+        elif not rows:
+            tracked = git(repo, "ls-files", "--error-unmatch", "--", relative, check=False).returncode == 0
             ignored = git(repo, "check-ignore", "-q", "--", relative, check=False).returncode == 0
-            if ignored:
+            if not tracked and ignored:
                 dirty.add(relative)
     return dirty
 
 
 def _atomic_bytes(path: Path, content: bytes) -> None:
     """Atomically replace one file while retaining its mode."""
-    mode = path.stat().st_mode
+    mode = stat.S_IMODE(path.stat().st_mode)
     fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
     try:
         with os.fdopen(fd, "wb") as stream:
@@ -680,18 +689,18 @@ def _fix_plans(repo: Path, rule: Rule, findings: list[Finding]) -> tuple[dict[st
     overlapping: set[str] = set()
     counts = {relative: len(items) for relative, items in by_path.items()}
     for relative, items in by_path.items():
-        has_overlap = _has_overlapping_findings(items)
-        if has_overlap and rule.id != "py-open-without-encoding":
-            overlapping.add(relative)
-            continue
         path = repo / relative
         original = path.read_bytes()
+        try:
+            content = original.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise RuleError(f"{path}: cannot safely rewrite non-UTF-8 source: {exc}") from exc
+        skipped = _overlapping_finding_indexes(items)
         if rule.id == "py-open-without-encoding":
-            rewritten, rewrite_overlap = ast_grep.rewrite_text_non_overlapping(
-                rule, original.decode("utf-8"))
-            has_overlap |= rewrite_overlap
+            rewritten, rewrite_overlap = ast_grep.rewrite_text_non_overlapping(rule, content)
         else:
-            rewritten = _rewrite_text(rule, original.decode("utf-8"))
+            rewritten, rewrite_overlap = ast_grep.rewrite_match_spans(rule, content, items, skipped)
+        has_overlap = bool(skipped) or rewrite_overlap
         if has_overlap:
             overlapping.add(relative)
         updated = rewritten.encode("utf-8")
@@ -700,16 +709,18 @@ def _fix_plans(repo: Path, rule: Rule, findings: list[Finding]) -> tuple[dict[st
     return plans, overlapping, counts
 
 
-def _has_overlapping_findings(findings: list[Finding]) -> bool:
-    """Return whether two source spans in one file overlap."""
-    ordered = sorted(findings, key=lambda item: (item.line, item.col, item.end_line, item.end_col))
-    furthest: tuple[int, int] | None = None
-    for item in ordered:
-        start, end = (item.line, item.col), (item.end_line, item.end_col)
-        if furthest is not None and start < furthest:
-            return True
-        furthest = end if furthest is None or end > furthest else furthest
-    return False
+def _overlapping_finding_indexes(findings: list[Finding]) -> set[int]:
+    """Return original finding indexes participating in a source-span overlap."""
+    ordered = sorted(enumerate(findings), key=lambda pair: (pair[1].line, pair[1].col,
+                                                             pair[1].end_line, pair[1].end_col))
+    overlaps: set[int] = set()
+    active: tuple[int, Finding] | None = None
+    for index, item in ordered:
+        if active is not None and (item.line, item.col) < (active[1].end_line, active[1].end_col):
+            overlaps.update((index, active[0]))
+        if active is None or (item.end_line, item.end_col) > (active[1].end_line, active[1].end_col):
+            active = (index, item)
+    return overlaps
 
 
 def _print_fix_plans(plans: dict[str, tuple[bytes, bytes]]) -> None:
@@ -735,7 +746,7 @@ def _apply_fix_plans(repo: Path, rule: Rule, plans: dict[str, tuple[bytes, bytes
         try:
             _atomic_bytes(path, updated)
             ast_grep.validate_parse(rule, path)
-            after = _scan_rule(repo, rule, excludes)
+            after = ast_grep.scan_file(repo, rule, path) if rule.engine == "ast-grep" else _scan_rule(repo, rule, excludes)
             current_count = sum(item.path == relative for item in after)
             if current_count >= counts[relative]:
                 _atomic_bytes(path, original)

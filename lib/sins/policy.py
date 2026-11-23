@@ -101,6 +101,14 @@ def fingerprint(sin_id: str, path: str, span: str, anchor: str) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
 
 
+def context_anchor(content: str, line: int) -> str:
+    """Return the nearest preceding non-blank line, matching regex scan semantics."""
+    for candidate in reversed(content.split("\n")[:max(0, line - 1)]):
+        if candidate.strip():
+            return normalized(candidate)
+    return "<bof>"
+
+
 _FORGIVE_MARKER = re.compile(r"sins:\s*forgive\s+")
 _SIN_ID = re.compile(r"[a-z0-9_]+(?:-[a-z0-9_]+)*")
 

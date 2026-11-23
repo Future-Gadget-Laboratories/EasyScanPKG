@@ -61,14 +61,23 @@ class RuleLoadingTests(unittest.TestCase):
             with self.assertRaisesRegex(RuleError, "examples.fixed"):
                 load_rule(path)
 
+    def test_rewrite_requires_a_non_empty_template(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "rewrite.toml"
+            content = RULE.format(id="rewrite-sin", extra="")
+            content = content.replace('engine = "regex"', 'engine = "ast-grep"')
+            content = content.replace('[match]\npattern = "bad"', '[match.rule]\npattern = "bad()"')
+            content = content.replace('[examples]\nbad = ["bad"]\ngood = ["good"]',
+                                      '[fix]\nkind = "rewrite"\n\n[examples]\nbad = ["bad()"]\ngood = ["good()"]\nfixed = ["ok()"]')
+            path.write_text(content, encoding="utf-8")
+            with self.assertRaisesRegex(RuleError, "fix.template"):
+                load_rule(path)
+
     def test_selected_unimplemented_engine_fails(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             pack = repo / "pack"
             pack.mkdir()
-            (pack / "custom.toml").write_text(
-                RULE.format(id="custom-sin", extra="").replace('engine = "regex"', 'engine = "ast-grep"'),
-                encoding="utf-8")
             (pack / "custom.toml").write_text(
                 RULE.format(id="custom-sin", extra="").replace('engine = "regex"', 'engine = "opengrep"'),
                 encoding="utf-8")
