@@ -57,7 +57,7 @@ def _glob_match(relative: str, pattern: str) -> bool:
         return fnmatch.fnmatchcase(path_parts[path_index], part) and matches(path_index + 1, pattern_index + 1)
 
     if "/" not in normalized and "**" not in pattern_parts:
-        return any(fnmatch.fnmatchcase(part, normalized) for part in path_parts)
+        return fnmatch.fnmatchcase(path_parts[-1], normalized)
     return matches(0, 0)
 
 
@@ -77,33 +77,40 @@ def _included(relative: str, rule: Rule) -> bool:
     )
 
 
+def _scan_file(file: Path, relative: str, rule: Rule, matcher: re.Pattern[str]) -> list[Finding]:
+    """Read one regular, bounded UTF-8 file and emit 1-based findings."""
+    file_stat = file.lstat()
+    if not stat.S_ISREG(file_stat.st_mode) or file_stat.st_size > MAX_BYTES or not _included(relative, rule):
+        return []
+    with file.open("rb") as handle:
+        raw = handle.read(MAX_BYTES + 1)
+    if len(raw) > MAX_BYTES or b"\0" in raw[:8192]:
+        return []
+    content = raw.decode("utf-8", errors="replace")
+    findings: list[Finding] = []
+    for match in matcher.finditer(content):
+        start_line = content.count("\n", 0, match.start()) + 1
+        end_line = content.count("\n", 0, match.end()) + 1
+        start_offset = content.rfind("\n", 0, match.start())
+        end_offset = content.rfind("\n", 0, match.end())
+        findings.append(Finding(rule.id, relative, start_line, match.start() - start_offset,
+                                end_line, match.end() - end_offset, rule.phrase, rule.severity))
+    return findings
+
+
 def scan_rule(repo: Path, rule: Rule) -> list[Finding]:
-    """Scan eligible UTF-8 files while skipping binary and oversized inputs."""
+    """Scan eligible UTF-8 files while pruning skipped directories."""
     findings: list[Finding] = []
     matcher = re.compile(rule.pattern, re.MULTILINE | _regex_flags(rule.flags))
     for directory, subdirectories, filenames in os.walk(repo, topdown=True, onerror=_raise_walk_error):
-        subdirectories[:] = sorted(name for name in subdirectories if name not in SKIP_DIRS)
         base = Path(directory)
+        rel_dir = () if base == repo else base.relative_to(repo).parts
+        subdirectories[:] = sorted(name for name in subdirectories
+                                   if not _is_skipped_path(rel_dir + (name,)))
         for filename in sorted(filenames):
             file = base / filename
-            file_stat = file.lstat()
-            if not stat.S_ISREG(file_stat.st_mode) or file_stat.st_size > MAX_BYTES:
-                continue
             relative = file.relative_to(repo).as_posix()
-            if not _included(relative, rule):
-                continue
-            with file.open("rb") as handle:
-                raw = handle.read(MAX_BYTES + 1)
-            if len(raw) > MAX_BYTES or b"\0" in raw[:8192]:
-                continue
-            content = raw.decode("utf-8", errors="replace")
-            for match in matcher.finditer(content):
-                start_line = content.count("\n", 0, match.start()) + 1
-                end_line = content.count("\n", 0, match.end()) + 1
-                start_offset = content.rfind("\n", 0, match.start())
-                end_offset = content.rfind("\n", 0, match.end())
-                findings.append(Finding(rule.id, relative, start_line, match.start() - start_offset,
-                                        end_line, match.end() - end_offset, rule.phrase, rule.severity))
+            findings.extend(_scan_file(file, relative, rule, matcher))
     return findings
 
 

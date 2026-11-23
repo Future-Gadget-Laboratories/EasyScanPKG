@@ -200,21 +200,27 @@ def _rule_sources(repo: Path, extra_dirs: list[Path], builtin: Path) -> list[tup
     return sources
 
 
-def _load_source_rules(sources: list[tuple[Path, bool]]) -> tuple[dict[str, Rule], set[str]]:
+def _duplicate_rule_error(file: Path, rule_id: str, is_builtin: bool, builtin_ids: set[str]) -> RuleError:
+    """Build the appropriate error for a duplicate or shadowed rule ID."""
+    origin = "built-in id" if is_builtin or rule_id in builtin_ids else "duplicate id"
+    return _fail(file, "id", f"{origin} {rule_id!r}; rule packs are additions only")
+
+
+def _load_source_rules(sources: list[tuple[Path, bool]]) -> dict[str, Rule]:
     """Load rule files and reject shadowed or duplicate IDs."""
     rules: dict[str, Rule] = {}
     builtin_ids: set[str] = set()
     for directory, is_builtin in sources:
-        files = sorted(directory.rglob("*.toml")) if directory.is_dir() else []
-        for file in files:
+        if not directory.is_dir():
+            continue
+        for file in sorted(directory.rglob("*.toml")):
             rule = load_rule(file)
             if rule.id in rules:
-                origin = "built-in id" if rule.id in builtin_ids or is_builtin else "duplicate id"
-                raise _fail(file, "id", f"{origin} {rule.id!r}; rule packs are additions only")
+                raise _duplicate_rule_error(file, rule.id, is_builtin, builtin_ids)
             rules[rule.id] = rule
             if is_builtin:
                 builtin_ids.add(rule.id)
-    return rules, builtin_ids
+    return rules
 
 
 def _select_rules(rules: dict[str, Rule], selected: list[str]) -> dict[str, Rule]:
@@ -237,7 +243,7 @@ def _require_implemented(rules: dict[str, Rule]) -> None:
 def load_rules(repo: Path, extra_dirs: list[Path], selected: list[str], *, require_implemented: bool = True) -> list[Rule]:
     """Load built-in and local addition packs, rejecting duplicate IDs."""
     builtin = Path(__file__).parent / "rules"
-    rules, _ = _load_source_rules(_rule_sources(repo, extra_dirs, builtin))
+    rules = _load_source_rules(_rule_sources(repo, extra_dirs, builtin))
     rules = _select_rules(rules, selected)
     if require_implemented:
         _require_implemented(rules)

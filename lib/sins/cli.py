@@ -7,7 +7,7 @@ import json
 import re
 import sys
 import tempfile
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 from . import RULES_VERSION
 from .exitcodes import ERROR, OK, select_exit_code
@@ -59,16 +59,10 @@ def _scan(args: argparse.Namespace) -> int:
     report = make_report(repo, rules, findings)
     if args.json_out:
         write_json(report, args.json_out)
-    if args.json_out == "-":
-        pass
-    elif args.format == "json":
-        print(json.dumps(report, indent=2))
-    else:
-        print(text_report(report))
-    failed = any((rule.mortal and any(f.sin == rule.id and not f.forgiven for f in findings)) or
-                 (not rule.mortal and rule.threshold is not None and
-                  sum(f.sin == rule.id and not f.forgiven for f in findings) > rule.threshold)
-                 for rule in rules) if args.fail_on == "mortal" else any(not item.forgiven for item in findings)
+    if args.json_out != "-":
+        print(json.dumps(report, indent=2) if args.format == "json" else text_report(report))
+    failed = bool(report["totals"]["mortal_over"] if args.fail_on == "mortal"
+                  else report["totals"]["unforgiven"])
     return select_exit_code(findings=failed)
 
 
@@ -78,19 +72,21 @@ def _suffix(language: str) -> str:
 
 def _example_path(rule: Rule) -> Path:
     """Choose a synthetic filename that matches the rule's include globs."""
+    for pattern in rule.include:
+        if pattern.startswith("/") or PureWindowsPath(pattern).is_absolute() or any(
+            part == ".." for part in pattern.split("/")
+        ):
+            raise RuleError(f"{rule.source}: paths.include: unsafe example pattern {pattern!r}")
     default_path = "example" + _suffix(rule.language)
     if _included(default_path, rule):
         return Path(default_path)
     for pattern in rule.include:
-        cleaned = pattern.strip("/")
+        cleaned = pattern
         if cleaned.endswith("/"):
             cleaned += default_path
-        parts = []
-        for part in cleaned.split("/"):
-            if part == "**":
-                parts.append("sample")
-            else:
-                parts.append(re.sub(r"\[[^\]]+\]", "a", part).replace("*", "example").replace("?", "a"))
+        parts = ["sample" if part == "**" else
+                 re.sub(r"\[[^\]]+\]", "a", part).replace("*", "example").replace("?", "a")
+                 for part in cleaned.split("/") if part]
         candidate = "/".join(parts)
         if candidate and _included(candidate, rule):
             return Path(candidate)
@@ -103,7 +99,9 @@ def _run_examples(rule: Rule) -> tuple[bool, str]:
         relative = _example_path(rule)
 
         def count(text: str) -> int:
-            file = repo / relative
+            file = (repo / relative).resolve()
+            if not file.is_relative_to(repo.resolve()):
+                raise RuleError(f"{rule.source}: paths.include: example path escapes temporary repo")
             file.parent.mkdir(parents=True, exist_ok=True)
             file.write_text(text, encoding="utf-8")
             try:

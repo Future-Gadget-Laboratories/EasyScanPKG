@@ -10,11 +10,13 @@ import tempfile
 import unittest
 from pathlib import Path
 import sys
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
 
-from sins.cli import main
+from sins.cli import _example_path, _run_examples, main
 from sins.exitcodes import ERROR, FINDINGS, LOOP_STOP, OK, select_exit_code
+from sins.rules import RuleError, load_rule
 
 
 RULE = '''id = "sample-sin"
@@ -77,6 +79,33 @@ class CliTests(unittest.TestCase):
                 rule = rule.replace('include = ["**/*.txt"]', f"include = {include}")
                 (pack / f"{rule_id}.toml").write_text(rule, encoding="utf-8")
                 self.assertEqual(invoke("test", "--rules-dir", str(pack), "--rule", rule_id)[0], OK)
+
+            directory_rule = RULE.format(mortal="false", threshold=0).replace("sample-sin", "directory-sin")
+            directory_rule = directory_rule.replace('include = ["**/*.txt"]', 'include = ["src/"]')
+            (pack / "directory.toml").write_text(directory_rule, encoding="utf-8")
+            self.assertEqual(invoke("test", "--rules-dir", str(pack), "--rule", "directory-sin")[0], OK)
+
+    def test_example_paths_reject_absolute_and_parent_segments(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            pack = Path(tmp) / "rules"
+            pack.mkdir()
+            for rule_id, include in (("parent-sin", "../*.txt"), ("absolute-sin", "/tmp/*.txt")):
+                rule = RULE.format(mortal="false", threshold=0).replace("sample-sin", rule_id)
+                rule = rule.replace('include = ["**/*.txt"]', f'include = ["{include}"]')
+                path = pack / f"{rule_id}.toml"
+                path.write_text(rule, encoding="utf-8")
+                self.assertEqual(invoke("test", "--rules-dir", str(pack), "--rule", rule_id)[0], ERROR)
+                with self.assertRaisesRegex(RuleError, "unsafe example pattern"):
+                    _example_path(load_rule(path))
+
+            safe_rule = load_rule(pack / "parent-sin.toml")
+            temp_dir = tempfile.TemporaryDirectory
+            with patch("sins.cli.tempfile.TemporaryDirectory",
+                       side_effect=lambda prefix: temp_dir(dir=tmp, prefix=prefix)):
+                with patch("sins.cli._example_path", return_value=Path("../escaped.txt")):
+                    with self.assertRaisesRegex(RuleError, "escapes temporary repo"):
+                        _run_examples(safe_rule)
+            self.assertFalse((Path(tmp) / "escaped.txt").exists())
 
     def test_count_list_version_and_json_outputs(self) -> None:
         rc, version_out = invoke("--version", "--json")

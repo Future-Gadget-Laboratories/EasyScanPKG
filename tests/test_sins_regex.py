@@ -10,7 +10,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
 
-from sins.regex_engine import scan_rule
+from sins.regex_engine import _glob_match, scan_rule
 from sins.rules import load_rule
 
 
@@ -33,6 +33,10 @@ good = ["good"]
 
 
 class RegexTests(unittest.TestCase):
+    def test_slashless_glob_matches_filename_not_directory_segment(self) -> None:
+        self.assertFalse(_glob_match("dir.txt/notes.md", "*.txt"))
+        self.assertTrue(_glob_match("notes.txt", "*.txt"))
+
     def test_coordinates_are_one_based_and_binary_and_large_files_skip(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
