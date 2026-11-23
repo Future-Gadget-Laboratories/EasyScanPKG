@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://future-gadget-laboratories.github.io/EasyScanPKG/fgl-review-1.schema.json",
+  "title": "fgl-review@1",
+  "type": "object",
+  "required": ["schema", "pr", "head", "reviewer", "writer_family", "verdict", "findings", "summary"],
+  "properties": {
+    "schema": {"const": "fgl-review@1"},
+    "pr": {"type": "string", "minLength": 1},
+    "head": {"type": "string", "minLength": 1},
+    "reviewer": {
+      "type": "object", "required": ["model", "family"],
+      "properties": {"model": {"type": "string", "minLength": 1}, "family": {"type": "string", "minLength": 1}},
+      "additionalProperties": false
+    },
+    "writer_family": {"type": "string", "minLength": 1},
+    "verdict": {"enum": ["READY", "CHANGES", "BLOCKED"]},
+    "findings": {"type": "array", "items": {"$ref": "#/$defs/finding"}},
+    "summary": {"type": "string", "minLength": 1}
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "safePath": {"type": "string", "minLength": 1, "pattern": "^(?!/)(?!(?:\\./)*\\.?$)(?![\\s\\S]*(?:^|/)\\.\\.(?:/|$))(?![A-Za-z]:)(?![\\s\\S]*\\\\)(?!\\s)(?![\\s\\S]*\\s$)(?![\\s\\S]*[\\x00-\\x1F\\x7F])[\\s\\S]+$"},
+    "fix": {
+      "oneOf": [
+        {"type": "object", "required": ["kind", "diff"], "properties": {"kind": {"const": "unified_diff"}, "diff": {"type": "string", "minLength": 1}, "test": {"type": "string"}, "confidence": {"type": "number", "minimum": 0, "maximum": 1}, "degraded_fix": {"type": "boolean"}}, "additionalProperties": false},
+        {"type": "object", "required": ["kind", "replacement"], "properties": {"kind": {"const": "replacement"}, "replacement": {"type": "object", "required": ["file", "start_line", "end_line", "old_code", "new_code"], "properties": {"file": {"$ref": "#/$defs/safePath"}, "start_line": {"type": "integer", "minimum": 1}, "end_line": {"type": "integer", "minimum": 1}, "old_code": {"type": "string", "minLength": 1}, "new_code": {"type": "string"}}, "additionalProperties": false}, "test": {"type": "string"}, "confidence": {"type": "number", "minimum": 0, "maximum": 1}, "degraded_fix": {"type": "boolean"}}, "additionalProperties": false},
+        {"type": "object", "required": ["kind", "steps"], "properties": {"kind": {"const": "instructions"}, "steps": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}}, "test": {"type": "string"}, "confidence": {"type": "number", "minimum": 0, "maximum": 1}, "degraded_fix": {"type": "boolean"}}, "additionalProperties": false}
+      ]
+    },
+    "finding": {
+      "type": "object", "required": ["id", "severity", "sin", "file", "line", "problem", "why"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "severity": {"enum": ["blocker", "major", "minor", "nit"]},
+        "sin": {"type": ["string", "null"]},
+        "file": {"$ref": "#/$defs/safePath"},
+        "line": {"type": ["integer", "null"], "minimum": 1},
+        "problem": {"type": "string", "minLength": 1},
+        "why": {"type": "string", "minLength": 1},
+        "proposed_fix": {"$ref": "#/$defs/fix"},
+        "new_sin_proposal": {"type": ["object", "string", "null"]}
+      },
+      "allOf": [{"if": {"properties": {"severity": {"enum": ["blocker", "major", "minor"]}}, "required": ["severity"]}, "then": {"required": ["proposed_fix"]}}],
+      "additionalProperties": false
+    }
+  }
+}

@@ -13,6 +13,7 @@ from . import RULES_VERSION
 from .exitcodes import ERROR, OK, select_exit_code
 from .regex_engine import _included, scan_rule
 from .report import make_report, text_report, write_json
+from .review import ReviewToolError, check_fixes, extract_review, validate_review
 from .rules import Rule, RuleError, load_rules
 
 
@@ -41,6 +42,20 @@ def _parser() -> argparse.ArgumentParser:
     new.add_argument("--language", required=True)
     new.add_argument("--engine", default="regex")
     new.add_argument("--out", type=Path, default=Path("."))
+    review = commands.add_parser("review", help="validate reviewer responses and proposed fixes")
+    review_commands = review.add_subparsers(dest="review_command", required=True)
+    validate = review_commands.add_parser("validate", help="validate an fgl-review@1 response")
+    validate.add_argument("file", type=Path)
+    validate.add_argument("--json", action="store_true")
+    check = review_commands.add_parser("check-fixes", help="preflight proposed fixes without applying them")
+    check.add_argument("file", type=Path)
+    check.add_argument("--repo", type=Path, required=True)
+    check.add_argument("--json", action="store_true")
+    template = review_commands.add_parser("template", help="print the reviewer prompt block")
+    template.add_argument("--writer-family", default="<writer-family>")
+    template.add_argument("--reviewer-model", default="<reviewer-model>")
+    template.add_argument("--reviewer-family", default="<reviewer-family>")
+    template.add_argument("--max-findings", default="20")
     return parser
 
 
@@ -181,6 +196,83 @@ good = ["PLACEHOLDER_GOOD"]
     return OK
 
 
+def _read_review(path: Path) -> dict:
+    """Load a review JSON file, raising on I/O or JSON decoding failures."""
+    value = extract_review(path.read_text(encoding="utf-8"))
+    if not isinstance(value, dict):
+        raise ValueError("review JSON must be an object")
+    return value
+
+
+def _review_template(args: argparse.Namespace) -> int:
+    """Render and print the reviewer prompt template."""
+    template_path = Path(__file__).parent / "templates" / "review-prompt.md"
+    prompt = template_path.read_text(encoding="utf-8")
+    substitutions = {"{writer_family}": args.writer_family,
+                     "{reviewer_model}": args.reviewer_model,
+                     "{reviewer_family}": args.reviewer_family,
+                     "{max_findings}": args.max_findings}
+    for marker, value in substitutions.items():
+        prompt = prompt.replace(marker, value)
+    print(prompt, end="")
+    return OK
+
+
+def _review_validate(review: dict, as_json: bool) -> int:
+    """Validate a parsed review dictionary and report errors."""
+    errors = validate_review(review)
+    result = {"valid": not errors, "errors": errors}
+    if as_json:
+        print(json.dumps(result, indent=2))
+    elif errors:
+        print("Invalid review:")
+        print("\n".join(f"- {error}" for error in errors))
+    else:
+        print("Review is valid.")
+    return OK if not errors else 1
+
+
+def _review_check_fixes(review: dict, repo_arg: Path, as_json: bool) -> int:
+    """Run fix preflight checks against repo and report exit status."""
+    repo = repo_arg.resolve()
+    if not repo.is_dir():
+        print(f"sins review: repo is not a directory: {repo}", file=sys.stderr)
+        return ERROR
+    errors = validate_review(review)
+    if errors:
+        if as_json:
+            print(json.dumps({"error": "invalid review", "errors": errors}, indent=2), file=sys.stderr)
+        else:
+            print("sins review: invalid review:\n" + "\n".join(f"- {error}" for error in errors), file=sys.stderr)
+        return ERROR
+    try:
+        outcomes = check_fixes(review, repo)
+    except ReviewToolError as exc:
+        print(f"sins review: {exc}", file=sys.stderr)
+        return ERROR
+    result = {"results": outcomes, "all_ok": not any(item["status"] == "fails" for item in outcomes)}
+    if as_json:
+        print(json.dumps(result, indent=2))
+    else:
+        for item in outcomes:
+            print(f"{item['status'].upper()} {item['id']}: {item['message']}")
+    return OK if result["all_ok"] else 1
+
+
+def _review(args: argparse.Namespace) -> int:
+    """Dispatch sins review subcommands."""
+    if args.review_command == "template":
+        return _review_template(args)
+    try:
+        review = _read_review(args.file)
+    except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as exc:
+        print(f"sins review: {exc}", file=sys.stderr)
+        return ERROR
+    if args.review_command == "validate":
+        return _review_validate(review, args.json)
+    return _review_check_fixes(review, args.repo, args.json)
+
+
 def main(argv: list[str] | None = None) -> int:
     """Run the CLI and convert expected tool failures to exit 2."""
     parser = _parser()
@@ -200,6 +292,8 @@ def main(argv: list[str] | None = None) -> int:
             return _list(args)
         if args.command == "new":
             return _new(args)
+        if args.command == "review":
+            return _review(args)
         parser.print_help()
         return OK
     except (RuleError, OSError) as exc:
