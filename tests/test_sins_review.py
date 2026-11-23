@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+import re
 import subprocess
 import sys
 import tempfile
@@ -82,7 +83,8 @@ class ReviewValidationTests(unittest.TestCase):
         self.assertTrue(any("start_line" in error for error in validate_review(replacement)))
         instructions = review(fix={"kind": "instructions", "steps": []})
         self.assertTrue(any("steps" in error for error in validate_review(instructions)))
-        for path in ("C:src/a.txt", ".", " src/a.txt", "src/a.txt ", "src/a\n.txt", "src/a\x00.txt"):
+        for path in ("C:src/a.txt", ".", "./.", " src/a.txt", "src/a.txt ", "src/a\n.txt",
+                     "src/a\t.txt", "src/a\x1b.txt", "src/a\x00.txt", "src/a\x7f.txt"):
             malformed_path = review()
             malformed_path["findings"][0]["file"] = path
             self.assertTrue(any("file" in error for error in validate_review(malformed_path)), path)
@@ -112,6 +114,12 @@ class ReviewValidationTests(unittest.TestCase):
         self.assertEqual(schema["properties"]["schema"]["const"], "fgl-review@1")
         self.assertEqual(schema["required"], ["schema", "pr", "head", "reviewer", "writer_family", "verdict", "findings", "summary"])
         self.assertEqual(schema["$defs"]["finding"]["required"], ["id", "severity", "sin", "file", "line", "problem", "why"])
+        path_pattern = schema["$defs"]["safePath"]["pattern"]
+        self.assertTrue(path_pattern.startswith("^") and path_pattern.endswith("$"))
+        path_regex = re.compile(path_pattern)
+        for path, expected in (("src/a.txt", True), ("src/a\n../b", False), ("./.", False),
+                               ("src/a\t.txt", False), ("src/a\x1b.txt", False), ("src/a\x7f.txt", False)):
+            self.assertEqual(path_regex.match(path) is not None, expected, path)
 
     def test_check_fixes_in_temp_git_repo(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
@@ -126,6 +134,15 @@ class ReviewValidationTests(unittest.TestCase):
             stale = good.replace("-old", "-stale")
             result = check_fixes(review(fix={"kind": "unified_diff", "diff": stale}), repo)
             self.assertEqual(result[0]["status"], "fails")
+            corrupt = "--- a/src/a.txt\n+++ b/src/a.txt\n@@ -1 +1 @@\n-old\n?new\n"
+            multi = review(fix={"kind": "unified_diff", "diff": corrupt})
+            second = dict(multi["findings"][0])
+            second["id"] = "R2"
+            second["proposed_fix"] = {"kind": "unified_diff", "diff": good}
+            multi["findings"].append(second)
+            result = check_fixes(multi, repo)
+            self.assertEqual([item["status"] for item in result], ["fails", "ok"])
+            self.assertIn("corrupt patch", result[0]["message"])
             replacement = {"kind": "replacement", "replacement": {"file": "src/a.txt", "start_line": 99,
                            "end_line": 99, "old_code": "old", "new_code": "new"}}
             self.assertEqual(check_fixes(review(fix=replacement), repo)[0]["status"], "ok")
@@ -172,6 +189,12 @@ class ReviewValidationTests(unittest.TestCase):
             self.assertEqual(invoke("review", "check-fixes", str(path), "--repo", str(repo))[0], 1)
             code, out = invoke("review", "check-fixes", str(path), "--repo", str(repo), "--json")
             self.assertEqual((code, json.loads(out)["all_ok"]), (1, False))
+            malformed_patch = review(fix={"kind": "unified_diff", "diff":
+                "--- a/src/a.txt\n+++ b/src/a.txt\n@@ -1 +1 @@\n-old\n?new\n"})
+            path.write_text(json.dumps(malformed_patch), encoding="utf-8")
+            code, out = invoke("review", "check-fixes", str(path), "--repo", str(repo), "--json")
+            self.assertEqual(code, 1)
+            self.assertEqual(json.loads(out)["results"][0]["status"], "fails")
             path.write_text("bad", encoding="utf-8")
             self.assertEqual(invoke("review", "check-fixes", str(path), "--repo", str(repo))[0], 2)
             diff = "--- a/src/a.txt\n+++ b/src/a.txt\n@@ -1 +1 @@\n-old\n+new\n"

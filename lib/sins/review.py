@@ -29,6 +29,7 @@ def _extra_key_errors(obj: dict[str, Any], allowed: set[str], path: str) -> list
 
 
 def _is_text(value: Any) -> bool:
+    """Return True when value is a string with non-whitespace characters."""
     return isinstance(value, str) and bool(value.strip())
 
 
@@ -39,7 +40,8 @@ def _is_pos_int(value: Any) -> bool:
 
 def _safe_relative(value: Any) -> bool:
     """Return True when value is a normalized, non-escaping relative POSIX path."""
-    if not _is_text(value) or value != value.strip() or any(ch in value for ch in ("\\", "\x00", "\n", "\r")):
+    has_control = isinstance(value, str) and any(ord(ch) < 32 or ord(ch) == 127 for ch in value)
+    if not _is_text(value) or value != value.strip() or "\\" in value or has_control:
         return False
     path = PurePosixPath(value)
     win = PureWindowsPath(value)
@@ -144,6 +146,7 @@ def _diff_errors(diff: Any) -> list[str]:
 
 
 def _fix_errors(fix: Any, path: str) -> list[str]:
+    """Validate a proposed_fix object according to its kind."""
     if not isinstance(fix, dict):
         return [f"{path}: must be an object"]
     kind = fix.get("kind")
@@ -198,28 +201,29 @@ def _fix_metadata_errors(fix: dict[str, Any], path: str) -> list[str]:
     return errors
 
 
+def _reviewer_errors(reviewer: Any, writer_family: Any) -> list[str]:
+    """Validate the reviewer object and enforce cross-family review."""
+    if not isinstance(reviewer, dict):
+        return ["reviewer: must be an object"]
+    errors = [f"reviewer.{key}: must be a non-empty string" for key in ("model", "family")
+              if not _is_text(reviewer.get(key))]
+    family = reviewer.get("family")
+    if _is_text(family) and _is_text(writer_family) and family.casefold() == writer_family.casefold():
+        errors.append("reviewer.family: same model family")
+    errors.extend(_extra_key_errors(reviewer, _REVIEWER_KEYS, "reviewer"))
+    return errors
+
+
 def _header_errors(review: dict[str, Any]) -> list[str]:
     """Validate review-level fields and cross-family policy."""
     errors: list[str] = []
     required = ("schema", "pr", "head", "reviewer", "writer_family", "verdict", "findings", "summary")
-    for key in required:
-        if key not in review:
-            errors.append(f"{key}: required")
+    errors.extend(f"{key}: required" for key in required if key not in review)
     if review.get("schema") != SCHEMA:
         errors.append("schema: must be fgl-review@1")
-    for key in ("pr", "head", "writer_family", "summary"):
-        if key in review and not _is_text(review[key]):
-            errors.append(f"{key}: must be a non-empty string")
-    reviewer = review.get("reviewer")
-    if not isinstance(reviewer, dict):
-        errors.append("reviewer: must be an object")
-    else:
-        for key in ("model", "family"):
-            if not _is_text(reviewer.get(key)):
-                errors.append(f"reviewer.{key}: must be a non-empty string")
-        if _is_text(reviewer.get("family")) and _is_text(review.get("writer_family")) and reviewer["family"].casefold() == review["writer_family"].casefold():
-            errors.append("reviewer.family: same model family")
-        errors.extend(_extra_key_errors(reviewer, _REVIEWER_KEYS, "reviewer"))
+    errors.extend(f"{key}: must be a non-empty string" for key in ("pr", "head", "writer_family", "summary")
+                  if key in review and not _is_text(review[key]))
+    errors.extend(_reviewer_errors(review.get("reviewer"), review.get("writer_family")))
     verdict = review.get("verdict")
     if not isinstance(verdict, str) or verdict not in {"READY", "CHANGES", "BLOCKED"}:
         errors.append("verdict: must be READY, CHANGES, or BLOCKED")
@@ -338,15 +342,13 @@ def _run_git_check(diff: str, repo: Path) -> tuple[bool, str]:
         raise
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise ReviewToolError(f"git apply check could not run: {exc}") from exc
-    if result.returncode == 128:
-        detail = (result.stderr or result.stdout or "git repository is unavailable").strip()
-        raise ReviewToolError(f"git apply check could not run: {detail}")
     if result.returncode:
         return False, (result.stderr or result.stdout or "git apply --check rejected the diff").strip()
     return True, "diff applies cleanly"
 
 
 def _check_replacement(fix: dict[str, Any], repo: Path) -> tuple[bool, str]:
+    """Verify that the replacement old_code anchor appears exactly once."""
     replacement = fix["replacement"]
     target = (repo / replacement["file"]).resolve()
     try:
