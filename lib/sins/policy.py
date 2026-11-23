@@ -101,7 +101,20 @@ def fingerprint(sin_id: str, path: str, span: str, anchor: str) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
 
 
-_FORGIVE = re.compile(r"sins:\s*forgive\s+([a-z0-9_-]+(?:\s*,\s*[a-z0-9_-]+)*)\s*--\s*(.*)$")
+_FORGIVE_MARKER = re.compile(r"sins:[ \t]*forgive[ \t]+")
+_SIN_ID = re.compile(r"[a-z0-9_]+(?:-[a-z0-9_]+)*")
+
+
+def _parse_forgiveness(comment: str) -> tuple[set[str], str] | None:
+    """Split `sins: forgive <id[,id...]> -- <reason>` without a backtracking regex."""
+    marker = _FORGIVE_MARKER.search(comment)
+    if marker is None:
+        return None
+    ids_text, separator, reason = comment[marker.end():].partition("--")
+    ids = [item.strip() for item in ids_text.split(",")]
+    if not separator or not all(_SIN_ID.fullmatch(item) for item in ids):
+        return None
+    return set(ids), reason.strip()
 
 
 def _comment_segments(line: str, language: str) -> list[tuple[str, str]]:
@@ -205,9 +218,8 @@ def _segment_forgives(comment: str, sin_id: str) -> bool:
     """Return whether one comment segment validly forgives sin_id."""
     if not re.search(r"sins:\s*forgive\b", comment):
         return False
-    match = _FORGIVE.search(comment)
-    return bool(match and match.group(2).strip()
-                and sin_id in {item.strip() for item in match.group(1).split(",")})
+    parsed = _parse_forgiveness(comment)
+    return bool(parsed and parsed[1] and sin_id in parsed[0])
 
 
 def _cpp_slash_forgiveness(line: str) -> bool:
@@ -220,8 +232,8 @@ def malformed_forgiveness(line: str, language: str) -> bool:
     """Return whether a real comment has a forgiveness marker without a reason."""
     for _kind, comment in _comment_segments(line, language):
         if re.search(r"sins:\s*forgive\b", comment):
-            match = _FORGIVE.search(comment)
-            if not match or not match.group(2).strip():
+            parsed = _parse_forgiveness(comment)
+            if not parsed or not parsed[1]:
                 return True
     return False
 
