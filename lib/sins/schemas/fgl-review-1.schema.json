@@ -38,10 +38,10 @@
         "line": {"type": ["integer", "null"], "minimum": 1},
         "problem": {"type": "string", "minLength": 1},
         "why": {"type": "string", "minLength": 1},
-        "proposed_fix": {"$ref": "#/$defs/fix"},
+        "proposed_fix": {"anyOf": [{"$ref": "#/$defs/fix"}, {"type": "null"}]},
         "new_sin_proposal": {"type": ["object", "string", "null"]}
       },
-      "allOf": [{"if": {"properties": {"severity": {"enum": ["blocker", "major", "minor"]}}, "required": ["severity"]}, "then": {"required": ["proposed_fix"]}}],
+      "allOf": [{"if": {"properties": {"severity": {"enum": ["blocker", "major", "minor"]}}, "required": ["severity"]}, "then": {"required": ["proposed_fix"], "properties": {"proposed_fix": {"not": {"type": "null"}}}}}],
       "additionalProperties": false
     }
   }

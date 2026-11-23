@@ -1,11 +1,11 @@
 id = "cpp-usleep"
-version = 1
+version = 2
 phrase = "use usleep for thread delays"
 description = "usleep is non-portable; prefer a typed duration and thread sleep."
 language = "cpp"
 severity = "minor"
 mortal = false
-engine = "regex"
+engine = "ast-grep"
 tags = ["portability"]
 
 [paths]
@@ -13,7 +13,7 @@ include = ["**/*.cpp", "**/*.cc", "**/*.h", "**/*.hpp"]
 exclude = []
 
 [match]
-pattern = "\\busleep\\s*\\("
+rule = { pattern = "usleep($$$ARGS)" }
 
 [examples]
 bad = ["usleep(1000);\n"]

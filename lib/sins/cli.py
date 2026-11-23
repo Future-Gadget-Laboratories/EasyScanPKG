@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import difflib
 import io
 import json
 import os
@@ -26,6 +27,8 @@ from .policy import (_comment_segments, forgiveness_for_line, load_policy, malfo
                      fingerprint, overlay_rules)
 from .git_tools import (baseline_counts, git, load_baseline, mark_new, merge_base, resolve_ref,
                         worktree)
+from .engines import ast_grep
+from .engines.ast_grep import EngineError
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -59,6 +62,16 @@ def _parser() -> argparse.ArgumentParser:
     test = commands.add_parser("test", help="run rule examples")
     test.add_argument("--rules-dir", type=Path, action="append", default=[])
     test.add_argument("--rule", action="append", default=[])
+    engines = commands.add_parser("engines", help="install or inspect pinned scanner engines")
+    engine_commands = engines.add_subparsers(dest="engine_command", required=True)
+    engine_install = engine_commands.add_parser("install", help="install a pinned engine")
+    engine_install.add_argument("--engine", choices=("ast-grep",), default="ast-grep")
+    engine_install.add_argument("--dest", type=Path)
+    engine_commands.add_parser("status", help="show installed engine status")
+    fix = commands.add_parser("fix", help="preview or apply a rule's mechanical rewrite")
+    fix.add_argument("--repo", type=Path, required=True)
+    fix.add_argument("--sin", required=True)
+    fix.add_argument("--apply", action="store_true")
     listing = commands.add_parser("list", help="list available rules")
     listing.add_argument("--repo", type=Path, default=Path.cwd())
     listing.add_argument("--rules-dir", type=Path, action="append", default=[])
@@ -109,11 +122,14 @@ def _scan(args: argparse.Namespace) -> int:
         write_json(report, args.json_out)
     if args.json_out != "-":
         print(json.dumps(report, indent=2) if args.format == "json" else text_report(report))
+    for engine_error in report.get("engine_errors", []):
+        print(f"sins: {engine_error['engine']} failed for {engine_error['sin']}: {engine_error['error']}",
+              file=sys.stderr)
     failed = bool((report["totals"].get("new", 0) or
                    (report["policy_tampering"] and not args.allow_policy_change)) if args.fail_on == "new" else
                   report["totals"]["mortal_over"] if args.fail_on == "mortal"
                   else report["totals"]["unforgiven"])
-    return select_exit_code(findings=failed)
+    return select_exit_code(error=bool(report.get("engine_errors")), findings=failed)
 
 
 def _forgive_findings(repo: Path, rules: list[Rule], findings: list[Finding],
@@ -200,7 +216,10 @@ def _base_report_path(args: argparse.Namespace, repo: Path) -> dict[str, Counter
     ref = args.base or "origin/main"
     base_commit = merge_base(repo, ref)
     with worktree(repo, base_commit) as snapshot:
-        return load_baseline_data(baseline_counts(_scan_report(snapshot, args.rules_dir, args.rule)))
+        base_report = _scan_report(snapshot, args.rules_dir, args.rule)
+        if base_report.get("engine_errors"):
+            raise RuleError("base snapshot scan failed: " + str(base_report["engine_errors"][0]["error"]))
+        return load_baseline_data(baseline_counts(base_report))
 
 
 def load_baseline_data(data: dict) -> dict[str, Counter[str]]:
@@ -455,9 +474,18 @@ def _scan_report(repo: Path, dirs: list[Path], selected: list[str]) -> dict:
     rules = load_rules(repo, dirs, selected)
     policy = load_policy(repo, all_rules)
     effective = overlay_rules(rules, policy)
-    findings = [finding for rule in effective for finding in scan_rule(repo, rule, policy.excludes)]
-    return make_report(repo, effective,
-                       _forgive_findings(repo, effective, findings, policy.excludes))
+    findings: list[Finding] = []
+    engine_errors: list[dict[str, str]] = []
+    for rule in effective:
+        try:
+            findings.extend(_scan_rule(repo, rule, policy.excludes))
+        except EngineError as exc:
+            engine_errors.append({"engine": rule.engine, "sin": rule.id, "error": str(exc)})
+    report = make_report(repo, effective, _forgive_findings(repo, effective, findings, policy.excludes))
+    report["engine_errors"] = engine_errors
+    if any(rule.engine == "ast-grep" for rule in effective):
+        report["engine_versions"]["ast-grep"] = "0.51.3"
+    return report
 
 
 def _baseline_write(args: argparse.Namespace) -> int:
@@ -489,6 +517,9 @@ def _diff(args: argparse.Namespace) -> int:
             after = _scan_report(head_path, args.rules_dir, args.rule)
     else:
         after = _scan_report(repo, args.rules_dir, args.rule)
+    engine_errors = before.get("engine_errors", []) + after.get("engine_errors", [])
+    if engine_errors:
+        raise RuleError("diff scan failed: " + str(engine_errors[0]["error"]))
     before_counts = _fingerprint_counts(before)
     after_counts = _fingerprint_counts(after)
     rows = []
@@ -556,7 +587,7 @@ def _run_examples(rule: Rule) -> tuple[bool, str]:
             file.parent.mkdir(parents=True, exist_ok=True)
             file.write_text(text, encoding="utf-8")
             try:
-                return len(scan_rule(repo, rule))
+                return len(_scan_rule(repo, rule))
             finally:
                 file.unlink(missing_ok=True)
 
@@ -567,8 +598,11 @@ def _run_examples(rule: Rule) -> tuple[bool, str]:
             if count(sample) != 0:
                 return False, f"good example {index} produced a finding"
         if rule.fix_kind == "rewrite":
-            for index, sample in enumerate(rule.fixed, start=1):
-                if count(sample) != 0:
+            for index, sample in enumerate(rule.bad, start=1):
+                rewritten = _rewrite_text(rule, sample)
+                if rewritten != rule.fixed[index - 1]:
+                    return False, f"fixed example {index} differs from the rewrite"
+                if count(rewritten) != 0:
                     return False, f"fixed example {index} is not clean"
     return True, "examples match expected findings"
 
@@ -581,6 +615,161 @@ def _test(args: argparse.Namespace) -> int:
         print(f"{'PASS' if ok else 'FAIL'} {rule.id}: {detail}")
         passed = passed and ok
     return OK if passed else ERROR
+
+
+def _scan_rule(repo: Path, rule: Rule, excludes: tuple[str, ...] = ()) -> list[Finding]:
+    """Dispatch one rule to its normalized engine."""
+    if rule.engine == "ast-grep":
+        return ast_grep.scan_rule(repo, rule, excludes)
+    return scan_rule(repo, rule, excludes)
+
+
+def _rewrite_text(rule: Rule, content: str) -> str:
+    """Apply an ast-grep rewrite to an isolated temporary source file."""
+    return ast_grep.rewrite_text(rule, content)
+
+
+def _engines(args: argparse.Namespace) -> int:
+    """Install or report status for pinned engines."""
+    if args.engine_command == "install":
+        binary = ast_grep.install(args.dest)
+        print(binary)
+        return OK
+    result = ast_grep.status()
+    print(json.dumps(result, indent=2))
+    return OK if result["hash_ok"] else ERROR
+
+
+def _dirty_paths(repo: Path, relatives: set[str]) -> set[str]:
+    """Return touched paths already modified, staged, or untracked-and-ignored."""
+    dirty: set[str] = set()
+    for relative in relatives:
+        state = git(repo, "status", "--porcelain", "--", relative, check=False).stdout
+        rows = [line for line in state.splitlines() if line]
+        if any(not row.startswith("?? ") for row in rows):
+            dirty.add(relative)
+        elif rows:
+            ignored = git(repo, "check-ignore", "-q", "--", relative, check=False).returncode == 0
+            if ignored:
+                dirty.add(relative)
+    return dirty
+
+
+def _atomic_bytes(path: Path, content: bytes) -> None:
+    """Atomically replace one file while retaining its mode."""
+    mode = path.stat().st_mode
+    fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    try:
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(content)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.chmod(temporary, mode)
+        os.replace(temporary, path)
+    except Exception:
+        Path(temporary).unlink(missing_ok=True)
+        raise
+
+
+def _fix_plans(repo: Path, rule: Rule, findings: list[Finding]) -> tuple[dict[str, tuple[bytes, bytes]], set[str], dict[str, int]]:
+    """Build rewrite previews and identify files with overlapping findings."""
+    by_path: dict[str, list[Finding]] = {}
+    for item in findings:
+        by_path.setdefault(item.path, []).append(item)
+    plans: dict[str, tuple[bytes, bytes]] = {}
+    overlapping: set[str] = set()
+    counts = {relative: len(items) for relative, items in by_path.items()}
+    for relative, items in by_path.items():
+        has_overlap = _has_overlapping_findings(items)
+        if has_overlap and rule.id != "py-open-without-encoding":
+            overlapping.add(relative)
+            continue
+        path = repo / relative
+        original = path.read_bytes()
+        if rule.id == "py-open-without-encoding":
+            rewritten, rewrite_overlap = ast_grep.rewrite_text_non_overlapping(
+                rule, original.decode("utf-8"))
+            has_overlap |= rewrite_overlap
+        else:
+            rewritten = _rewrite_text(rule, original.decode("utf-8"))
+        if has_overlap:
+            overlapping.add(relative)
+        updated = rewritten.encode("utf-8")
+        if original != updated:
+            plans[relative] = (original, updated)
+    return plans, overlapping, counts
+
+
+def _has_overlapping_findings(findings: list[Finding]) -> bool:
+    """Return whether two source spans in one file overlap."""
+    ordered = sorted(findings, key=lambda item: (item.line, item.col, item.end_line, item.end_col))
+    furthest: tuple[int, int] | None = None
+    for item in ordered:
+        start, end = (item.line, item.col), (item.end_line, item.end_col)
+        if furthest is not None and start < furthest:
+            return True
+        furthest = end if furthest is None or end > furthest else furthest
+    return False
+
+
+def _print_fix_plans(plans: dict[str, tuple[bytes, bytes]]) -> None:
+    """Print a unified diff for each planned file change."""
+    for relative, (before, after) in plans.items():
+        old = before.decode("utf-8").splitlines(keepends=True)
+        new = after.decode("utf-8").splitlines(keepends=True)
+        diff = difflib.unified_diff(old, new, fromfile=f"a/{relative}", tofile=f"b/{relative}")
+        print("".join(diff), end="")
+    print(f"would change {len(plans)} file(s)")
+
+
+def _apply_fix_plans(repo: Path, rule: Rule, plans: dict[str, tuple[bytes, bytes]],
+                     overlapping: set[str], counts: dict[str, int],
+                     excludes: tuple[str, ...]) -> tuple[int, int, int]:
+    """Apply planned edits with dirty-tree, parse, and count-drop checks."""
+    dirty = _dirty_paths(repo, set(plans))
+    if dirty:
+        raise RuleError("refusing to edit dirty files: " + ", ".join(sorted(dirty)))
+    applied = rolled_back = 0
+    for relative, (original, updated) in plans.items():
+        path = repo / relative
+        try:
+            _atomic_bytes(path, updated)
+            ast_grep.validate_parse(rule, path)
+            after = _scan_rule(repo, rule, excludes)
+            current_count = sum(item.path == relative for item in after)
+            if current_count >= counts[relative]:
+                _atomic_bytes(path, original)
+                rolled_back += 1
+            else:
+                applied += 1
+        except EngineError:
+            _atomic_bytes(path, original)
+            rolled_back += 1
+    return applied, len(overlapping), rolled_back
+
+
+def _fix(args: argparse.Namespace) -> int:
+    """Preview or apply safe rewrites for one rule."""
+    repo = args.repo.resolve()
+    if not repo.is_dir():
+        raise RuleError(f"{repo}: repo: directory does not exist or is unreadable")
+    all_rules = load_rules(repo, [], [], require_implemented=False)
+    policy = load_policy(repo, all_rules)
+    rules = _rules(repo, [], [args.sin])
+    effective = overlay_rules(rules, policy)
+    if not effective:
+        raise RuleError(f"{args.sin}: rule is disabled by policy")
+    rule = effective[0]
+    if rule.engine != "ast-grep" or rule.fix_kind != "rewrite":
+        raise RuleError(f"{rule.id}: only ast-grep rewrite rules can be applied")
+    findings = _scan_rule(repo, rule, policy.excludes)
+    plans, overlapping, counts = _fix_plans(repo, rule, findings)
+    if not args.apply:
+        _print_fix_plans(plans)
+        return OK
+    applied, skipped, rolled_back = _apply_fix_plans(repo, rule, plans, overlapping, counts, policy.excludes)
+    print(f"applied={applied} skipped={skipped} rolled_back={rolled_back}")
+    return OK
 
 
 def _list(args: argparse.Namespace) -> int:
@@ -715,7 +904,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.version:
         details = {"package_version": RULES_VERSION, "rules_version": RULES_VERSION,
-                   "engines": {"regex": "available", "ast-grep": "not implemented", "opengrep": "not implemented",
+                   "engines": {"regex": "available", "ast-grep": "0.51.3 pinned", "opengrep": "not implemented",
                                "paladin": "not implemented", "external": "not implemented"}}
         print(json.dumps(details, indent=2) if args.json else f"sins {RULES_VERSION} (regex available)")
         return OK
@@ -728,6 +917,10 @@ def main(argv: list[str] | None = None) -> int:
             return _diff(args)
         if args.command == "test":
             return _test(args)
+        if args.command == "engines":
+            return _engines(args)
+        if args.command == "fix":
+            return _fix(args)
         if args.command == "list":
             return _list(args)
         if args.command == "new":

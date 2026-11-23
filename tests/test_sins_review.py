@@ -44,6 +44,12 @@ class ReviewValidationTests(unittest.TestCase):
         del missing["findings"][0]["proposed_fix"]
         self.assertTrue(any("proposed_fix" in error for error in validate_review(missing)))
         self.assertEqual(validate_review(review("nit")), [])
+        nit_null = review("nit")
+        nit_null["findings"][0]["proposed_fix"] = None
+        self.assertEqual(validate_review(nit_null), [])
+        major_null = review("major")
+        major_null["findings"][0]["proposed_fix"] = None
+        self.assertTrue(any("null is allowed only for nit" in error for error in validate_review(major_null)))
         same_family = review()
         same_family["reviewer"]["family"] = "OPENAI"
         self.assertIn("reviewer.family: same model family", validate_review(same_family))

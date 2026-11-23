@@ -1,9 +1,9 @@
 # sins
 
 `sins` is a local, rule based scanner that reports recurring code and text
-patterns using Paladin's mortal/venial vocabulary. S1 includes a standard
-library TOML loader, a bounded regular expression engine, JSON and text
-reports, and rule example checks. Rules are additions: repo-local rules cannot
+patterns using Paladin's mortal/venial vocabulary. It includes a standard
+library TOML loader, regex and pinned ast-grep engines, JSON and text reports,
+and rule example checks. Rules are additions: repo-local rules cannot
 replace a built-in ID.
 
 ## Rule format
@@ -48,6 +48,29 @@ blocks only when its unforgiven count exceeds `mortal_threshold`. If omitted,
 the threshold is unlimited; set it explicitly (including `0`) to enable a cap.
 Regex matching uses Python `re` with MULTILINE. Files over 2 MiB, files with a
 NUL byte in the first 8 KiB, and common generated/build directories are skipped.
+
+Structural rules set `engine = "ast-grep"`; their `[match]` table is passed as
+the ast-grep rule body. For example:
+
+```toml
+engine = "ast-grep"
+[match.rule]
+kind = "except_clause"
+regex = "^except\\s*:"
+```
+
+The binary is pinned to 0.51.3 in `lib/sins/engines/pins.toml`. Installation
+verifies the release zip before extracting only `ast-grep`:
+`./bin/sins engines install`. `./bin/sins engines status` reports the resolved
+path, version, and hash status. `SINS_AST_GREP` selects an explicit binary, but
+it must pass the same version and hash checks. The CLI never looks up or invokes
+`sg`, and scans never download engines automatically. Scans use two threads
+and a 120 second timeout.
+
+`sins fix --repo . --sin py-open-without-encoding` prints a unified diff by
+default. Add `--apply` to atomically apply rewrites. The fixer refuses modified,
+staged, or ignored files and restores a file if parsing fails or the sin count
+does not decrease. Only rules declaring `fix.kind = "rewrite"` are eligible.
 
 ## Repo policy and forgiveness
 
@@ -121,6 +144,8 @@ configuration still exits 2.
 ./bin/sins count --repo . --json .sins/out/report.json
 ./bin/sins scan --repo . --rule py-bare-except --fail-on any --format json
 ./bin/sins test
+./bin/sins engines status
+./bin/sins fix --repo . --sin py-open-without-encoding
 ./bin/sins list
 ./bin/sins new my-new-sin --language python --out .sins/rules
 ./bin/sins --version --json
@@ -150,12 +175,17 @@ Precedence is 2 > 3 > 1 > 0.
    the example check.
 2. Add representative bad and good snippets; run `sins test --rules-dir <pack>`.
 3. Put the reviewed rule under `.sins/rules/`, then run `sins scan --repo .`.
+   For ast-grep rules, `[match]` is the engine rule body and examples run
+   against the pinned binary.
+
+In `fgl-review@1` responses, `proposed_fix: null` is allowed for nit findings.
+Blocker, major, and minor findings still require a proposed fix object.
 
 ## Roadmap
 
 - S2: review-with-fix schema and reviewer guidance.
 - S3: policy, forgiveness, baselines, fingerprints, diff, and `--fail-on new` (implemented).
-- S4: pinned ast-grep engine and safe rewrites.
+- S4: pinned ast-grep engine and safe rewrites (implemented).
 - S5: pinned semantic engine and external checker importer.
 - S6: trusted Paladin report federation.
 - S7: Sonar/SARIF output and EasyScanPKG adapter.

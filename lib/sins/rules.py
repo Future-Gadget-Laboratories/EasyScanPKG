@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 import tomllib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -44,6 +44,7 @@ class Rule:
     tags: tuple[str, ...]
     superseded_by: str | None
     source: Path
+    ast_rule: dict[str, Any] = field(default_factory=dict)
 
 
 def _fail(path: Path, field: str, message: str) -> RuleError:
@@ -110,6 +111,10 @@ def _sections(data: dict[str, Any], path: Path) -> tuple[dict[str, Any], ...]:
                ("examples", examples, {"bad", "good", "fixed"})]
     if data["engine"] == "regex":
         allowed.append(("match", match, {"pattern", "flags"}))
+    elif data["engine"] == "ast-grep":
+        allowed.append(("match", match, {"rule"}))
+        if not isinstance(match.get("rule"), dict) or not match["rule"]:
+            raise _fail(path, "match.rule", "ast-grep requires a non-empty rule table")
     for section, values, fields in allowed:
         extra = sorted(set(values) - fields)
         if extra:
@@ -121,7 +126,7 @@ def _validate_fix(fix: dict[str, Any], path: Path) -> tuple[str | None, str | No
     kind, template = fix.get("kind"), fix.get("template")
     if kind is not None and (not isinstance(kind, str) or kind not in {"template", "rewrite"}):
         raise _fail(path, "fix.kind", "must be template or rewrite")
-    if kind and (not isinstance(template, str) or not template):
+    if kind and kind == "template" and (not isinstance(template, str) or not template):
         raise _fail(path, "fix.template", "is required when fix.kind is set")
     if not kind and template is not None:
         raise _fail(path, "fix.kind", "is required when fix.template is set")
@@ -171,7 +176,8 @@ def load_rule(path: Path) -> Rule:
     return Rule(rule_id, data["version"], data["phrase"], data["description"], data["language"],
                 include, exclude, data["severity"], data["mortal"], threshold, data["engine"], pattern,
                 flags, fix_kind, template, fix_hint, bad, good, fixed,
-                _strings(data.get("tags"), path, "tags"), superseded_by, path)
+                _strings(data.get("tags"), path, "tags"), superseded_by, path,
+                match.get("rule", {}))
 
 
 def _regex_flags(value: str) -> int:
@@ -234,10 +240,10 @@ def _select_rules(rules: dict[str, Rule], selected: list[str]) -> dict[str, Rule
 
 
 def _require_implemented(rules: dict[str, Rule]) -> None:
-    """Reject selected engines that this S1 implementation cannot run."""
-    unsupported = sorted({rule.engine for rule in rules.values() if rule.engine != "regex"})
+    """Reject selected engines that this implementation cannot run."""
+    unsupported = sorted({rule.engine for rule in rules.values() if rule.engine not in {"regex", "ast-grep"}})
     if unsupported:
-        raise RuleError(f"engine {unsupported[0]!r} is recognized but not implemented in S1")
+        raise RuleError(f"engine {unsupported[0]!r} is recognized but not implemented")
 
 
 def load_rules(repo: Path, extra_dirs: list[Path], selected: list[str], *, require_implemented: bool = True) -> list[Rule]:

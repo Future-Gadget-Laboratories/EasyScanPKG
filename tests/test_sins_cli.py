@@ -120,7 +120,7 @@ class CliTests(unittest.TestCase):
             (rules / "r.toml").write_text(RULE.format(mortal="false", threshold=0), encoding="utf-8")
             (rules / "ast.toml").write_text(RULE.format(mortal="false", threshold=0).replace("sample-sin", "ast-sin")
                 .replace('engine = "regex"', 'engine = "ast-grep"').replace('[match]\npattern = "bad"',
-                '[match]\nrule = "except_clause"'), encoding="utf-8")
+                '[match]\nrule = { kind = "except_clause" }'), encoding="utf-8")
             rc_count, count_out = invoke("count", "--repo", str(repo), "--rules-dir", str(rules),
                 "--rule", "sample-sin", "--format", "json")
             self.assertEqual(rc_count, FINDINGS)
