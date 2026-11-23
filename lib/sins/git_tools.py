@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 import tempfile
@@ -38,9 +39,9 @@ def resolve_ref(repo: Path, ref: str) -> str:
     return git(repo, "rev-parse", "--verify", f"{validate_ref(ref)}^{{commit}}").stdout.strip()
 
 
-def merge_base(repo: Path, ref: str) -> str:
-    """Resolve merge-base of a reference and current HEAD."""
-    return git(repo, "merge-base", validate_ref(ref), "HEAD").stdout.strip()
+def merge_base(repo: Path, ref: str, head: str = "HEAD") -> str:
+    """Resolve merge-base of a reference and target head revision."""
+    return git(repo, "merge-base", validate_ref(ref), validate_ref(head)).stdout.strip()
 
 
 def baseline_counts(report: dict) -> dict:
@@ -104,14 +105,33 @@ def worktree(repo: Path, commit: str) -> AbstractContextManager[Path]:
             self.temp = tempfile.TemporaryDirectory(prefix="sins-worktree-")
             self.path = Path(self.temp.name) / "repo"
             try:
-                git(repo, "worktree", "add", "--detach", str(self.path), resolve_ref(repo, commit))
+                revision = resolve_ref(repo, commit)
+                if _worktree_metadata_writable(repo):
+                    git(repo, "worktree", "add", "--detach", str(self.path), revision)
+                    self.is_worktree = True
+                else:
+                    self._clone_snapshot(repo, revision)
             except Exception:
                 self.temp.cleanup()
                 raise
             return self.path
 
         def __exit__(self, *_exc: object) -> bool:
-            git(repo, "worktree", "remove", "--force", str(self.path), check=False)
+            if getattr(self, "is_worktree", False):
+                git(repo, "worktree", "remove", "--force", str(self.path), check=False)
             self.temp.cleanup()
             return False
+
+        def _clone_snapshot(self, source: Path, revision: str) -> None:
+            """Materialize a local detached clone when source git metadata is read-only."""
+            git(source, "clone", "--quiet", "--shared", "--no-checkout", str(source), str(self.path))
+            git(self.path, "checkout", "--quiet", "--detach", revision)
     return Snapshot()
+
+
+def _worktree_metadata_writable(repo: Path) -> bool:
+    """Check whether linked worktree registration can update the common git dir."""
+    common = Path(git(repo, "rev-parse", "--git-common-dir").stdout.strip())
+    if not common.is_absolute():
+        common = repo / common
+    return os.access(common, os.W_OK)

@@ -101,7 +101,7 @@ def fingerprint(sin_id: str, path: str, span: str, anchor: str) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
 
 
-_FORGIVE = re.compile(r"sins:\s*forgive\s+([a-z0-9,-]+)\s*--\s*(.*)$")
+_FORGIVE = re.compile(r"sins:\s*forgive\s+([a-z0-9_-]+(?:\s*,\s*[a-z0-9_-]+)*)\s*--\s*(.*)$")
 
 
 def _comment_text(line: str, language: str) -> str:
@@ -116,63 +116,103 @@ def _comment_segments(line: str, language: str) -> list[tuple[str, str]]:
     comments: list[tuple[str, str]] = []
     index = 0
     while index < len(line):
-        char = line[index]
-        pair = line[index:index + 2]
         if quoted:
-            if escaped:
-                escaped = False
-            elif char == "\\":
-                escaped = True
-            elif char == quoted:
-                quoted = ""
+            quoted, escaped = _advance_quote(line[index], quoted, escaped)
             index += 1
             continue
-        if char in "\"'`":
+        char = line[index]
+        if char in "\"'" and not _cpp_digit_separator(line, index, language):
             quoted = char
             index += 1
             continue
-        if language == "cpp" and pair == "/*":
-            end = line.find("*/", index + 2)
-            if end < 0:
-                comments.append(("block", line[index + 2:]))
+        segment = _comment_at(line, index, language)
+        if segment is not None:
+            comment, index, stop = segment
+            comments.append(comment)
+            if stop:
                 break
-            comments.append(("block", line[index + 2:end]))
-            index = end + 2
             continue
-        if language == "cpp" and pair == "//":
-            comments.append(("line", line[index + 2:]))
-            break
-        if language != "cpp" and char == "#":
-            comments.append(("hash", line[index + 1:]))
-            break
         index += 1
     return comments
+
+
+def _advance_quote(char: str, quoted: str, escaped: bool) -> tuple[str, bool]:
+    """Advance one character inside a quoted string."""
+    if escaped:
+        return quoted, False
+    if char == "\\":
+        return quoted, True
+    return ("", False) if char == quoted else (quoted, False)
+
+
+def _cpp_digit_separator(line: str, index: int, language: str) -> bool:
+    """Recognize a C++ digit separator instead of opening a character literal."""
+    return (language == "cpp" and line[index] == "'" and index > 0 and index + 1 < len(line)
+            and line[index - 1] in "0123456789abcdefABCDEF"
+            and line[index + 1] in "0123456789abcdefABCDEF"
+            and (index + 2 >= len(line) or line[index + 2] != "'"))
+
+
+def _comment_at(line: str, index: int, language: str) -> tuple[tuple[str, str], int, bool] | None:
+    """Return a comment segment beginning at index and its scan position."""
+    pair = line[index:index + 2]
+    if language == "cpp" and pair == "/*":
+        end = line.find("*/", index + 2)
+        if end < 0:
+            return ("block", line[index + 2:]), len(line), True
+        return ("block", line[index + 2:end]), end + 2, False
+    if language == "cpp" and pair == "//":
+        return ("line", line[index + 2:]), len(line), True
+    if language != "cpp" and line[index] == "#":
+        return ("hash", line[index + 1:]), len(line), True
+    return None
 
 
 def forgiveness_for_line(lines: list[str], line_number: int, language: str,
                          sin_id: str) -> bool:
     """Return whether a comment forgives a finding on its source line."""
     source = lines[line_number - 1]
-    comments = [_comment_text(source, language)]
+    if language == "cpp" and _cpp_slash_forgiveness(source):
+        return True
+    if any(_segment_forgives(comment, sin_id) for _kind, comment in _comment_segments(source, language)):
+        return True
+    if _is_standalone_comment(source, language):
+        return False
     previous = line_number - 2
-    if previous >= 0 and not lines[previous].strip():
-        while previous >= 0 and not lines[previous].strip():
-            previous -= 1
-    if previous >= 0 and not source.strip().startswith(("#", "//", "/*")):
-        comments.append(_comment_text(lines[previous], language))
-    for comment in comments:
-        if language == "cpp" and _cpp_slash_forgiveness(source):
+    while previous >= 0 and not lines[previous].strip():
+        previous -= 1
+    if previous < 0 or not _is_standalone_comment(lines[previous], language):
+        return False
+    return any(_segment_forgives(comment, sin_id)
+               for _kind, comment in _comment_segments(lines[previous], language))
+
+
+def _is_standalone_comment(line: str, language: str) -> bool:
+    """Return whether a non-blank line contains only comment tokens."""
+    rest = line.strip()
+    if not rest:
+        return False
+    if language != "cpp":
+        return rest.startswith("#")
+    while rest:
+        if rest.startswith("//"):
             return True
-        marker = re.search(r"sins:\s*forgive\b", comment)
-        if not marker:
-            continue
-        match = _FORGIVE.search(comment)
-        if not match or not match.group(2).strip():
+        if not rest.startswith("/*"):
             return False
-        ids = {item.strip() for item in match.group(1).split(",")}
-        if sin_id in ids:
+        end = rest.find("*/", 2)
+        if end < 0:
             return True
-    return False
+        rest = rest[end + 2:].lstrip()
+    return True
+
+
+def _segment_forgives(comment: str, sin_id: str) -> bool:
+    """Return whether one comment segment validly forgives sin_id."""
+    if not re.search(r"sins:\s*forgive\b", comment):
+        return False
+    match = _FORGIVE.search(comment)
+    return bool(match and match.group(2).strip()
+                and sin_id in {item.strip() for item in match.group(1).split(",")})
 
 
 def _cpp_slash_forgiveness(line: str) -> bool:
@@ -183,10 +223,11 @@ def _cpp_slash_forgiveness(line: str) -> bool:
 
 def malformed_forgiveness(line: str, language: str) -> bool:
     """Return whether a real comment has a forgiveness marker without a reason."""
-    comment = _comment_text(line, language)
-    if not re.search(r"sins:\s*forgive\b", comment):
-        return False
-    match = _FORGIVE.search(comment)
-    return not match or not match.group(2).strip()
+    for _kind, comment in _comment_segments(line, language):
+        if re.search(r"sins:\s*forgive\b", comment):
+            match = _FORGIVE.search(comment)
+            if not match or not match.group(2).strip():
+                return True
+    return False
 
 

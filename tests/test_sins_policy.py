@@ -62,6 +62,77 @@ class PolicyTests(unittest.TestCase):
             self.assertEqual(rc, 0)
             self.assertTrue(json.loads(out)["findings"][0]["forgiven"])
 
+    def test_forgiveness_marker_inside_python_string_is_ignored(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            repo = Path(temp)
+            (repo / "a.py").write_text(
+                'text = "# sins: forgive py-bare-except -- fake"\nexcept:\n', encoding="utf-8")
+            rc, output = run("scan", "--repo", str(repo), "--rule", "py-bare-except", "--fail-on", "any",
+                             "--format", "json")
+            self.assertEqual(rc, 1)
+            self.assertFalse(json.loads(output)["findings"][0]["forgiven"])
+
+    def test_forgiveness_without_reason_emits_meta_sin(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            repo = Path(temp)
+            (repo / "a.py").write_text("except: # sins: forgive py-bare-except\n", encoding="utf-8")
+            rc, output = run("scan", "--repo", str(repo), "--rule", "py-bare-except", "--format", "json")
+            report = json.loads(output)
+            self.assertEqual(rc, 0)
+            self.assertTrue(any(item["sin"] == "sins-forgive-without-reason" for item in report["findings"]))
+
+    def test_cpp_forgive_me_comment_forgives_same_line(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            repo = Path(temp)
+            (repo / "a.cpp").write_text("usleep(1'000); //forgive me\n", encoding="utf-8")
+            rc, output = run("scan", "--repo", str(repo), "--rule", "cpp-usleep", "--format", "json")
+            self.assertEqual(rc, 0)
+            self.assertTrue(json.loads(output)["findings"][0]["forgiven"])
+
+    def test_trailing_comment_does_not_forgive_following_line(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            repo = Path(temp)
+            (repo / "a.py").write_text(
+                "x = 1 # sins: forgive py-bare-except -- inline\nexcept:\n", encoding="utf-8")
+            rc, output = run("scan", "--repo", str(repo), "--rule", "py-bare-except", "--fail-on", "any",
+                             "--format", "json")
+            self.assertEqual(rc, 1)
+            self.assertFalse(json.loads(output)["findings"][0]["forgiven"])
+
+    def test_comma_spaced_forgiveness_ids_are_accepted(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            repo = Path(temp)
+            (repo / "a.py").write_text(
+                "# sins: forgive py-bare-except, py-assert-validation -- two rules\nexcept:\n",
+                encoding="utf-8")
+            rc, output = run("scan", "--repo", str(repo), "--rule", "py-bare-except", "--format", "json")
+            self.assertEqual(rc, 0)
+            self.assertTrue(json.loads(output)["findings"][0]["forgiven"])
+
+    def test_policy_for_unselected_rule_does_not_break_filtered_scan(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            repo = Path(temp)
+            (repo / ".sins").mkdir()
+            (repo / ".sins/policy.toml").write_text(
+                '[sins."cpp-usleep"]\nmortal = true\n', encoding="utf-8")
+            (repo / "a.py").write_text("except:\n", encoding="utf-8")
+            rc, output = run("scan", "--repo", str(repo), "--rule", "py-bare-except", "--format", "json")
+            self.assertEqual(rc, 0)
+            self.assertEqual(len(json.loads(output)["findings"]), 1)
+            self.assertEqual(json.loads(output)["sins"][0]["id"], "py-bare-except")
+
+    def test_excluded_paths_do_not_emit_forgiveness_meta_sins(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            repo = Path(temp)
+            (repo / "vendor").mkdir()
+            (repo / "vendor/a.py").write_text("# sins: forgive py-bare-except\n", encoding="utf-8")
+            (repo / ".sins").mkdir()
+            (repo / ".sins/policy.toml").write_text('[paths]\nexclude = ["vendor/**"]\n', encoding="utf-8")
+            rc, output = run("scan", "--repo", str(repo), "--format", "json")
+            self.assertEqual(rc, 0)
+            self.assertFalse(any(item["sin"] == "sins-forgive-without-reason"
+                                 for item in json.loads(output)["findings"]))
+
 
 if __name__ == "__main__":
     unittest.main()

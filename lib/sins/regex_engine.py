@@ -6,10 +6,12 @@ import fnmatch
 import os
 import re
 import stat
+from bisect import bisect_right
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 
+from .policy import fingerprint
 from .rules import Rule, _regex_flags
 
 MAX_BYTES = 2 * 1024 * 1024
@@ -91,19 +93,24 @@ def _scan_file(file: Path, relative: str, rule: Rule, matcher: re.Pattern[str],
     if len(raw) > MAX_BYTES or b"\0" in raw[:8192]:
         return []
     content = raw.decode("utf-8", errors="replace")
+    lines = content.split("\n")
+    line_starts = [0] + [index + 1 for index, char in enumerate(content) if char == "\n"]
+    anchors: list[str] = []
+    previous = "<bof>"
+    for line in lines:
+        anchors.append(previous)
+        if line.strip():
+            previous = line
     findings: list[Finding] = []
     for match in matcher.finditer(content):
-        start_line = content.count("\n", 0, match.start()) + 1
-        end_line = content.count("\n", 0, match.end()) + 1
-        start_offset = content.rfind("\n", 0, match.start())
-        end_offset = content.rfind("\n", 0, match.end())
+        start_index = bisect_right(line_starts, match.start()) - 1
+        end_index = bisect_right(line_starts, match.end()) - 1
+        start_offset = line_starts[start_index]
+        end_offset = line_starts[end_index]
         span = match.group(0)
-        preceding = [line for line in content[:match.start()].splitlines() if line.strip()]
-        anchor = preceding[-1] if preceding else "<bof>"
-        from .policy import fingerprint
-        findings.append(Finding(rule.id, relative, start_line, match.start() - start_offset,
-                                end_line, match.end() - end_offset, rule.phrase, rule.severity,
-                                fingerprint=fingerprint(rule.id, relative, span, anchor)))
+        findings.append(Finding(rule.id, relative, start_index + 1, match.start() - start_offset + 1,
+                                end_index + 1, match.end() - end_offset + 1, rule.phrase, rule.severity,
+                                fingerprint=fingerprint(rule.id, relative, span, anchors[start_index])))
     return findings
 
 

@@ -3,23 +3,26 @@
 from __future__ import annotations
 
 import argparse
+import io
 import json
 import os
 import re
+import stat
 import sys
 import tempfile
 import tomllib
+import tokenize
 from collections import Counter
 from dataclasses import replace
 from pathlib import Path, PureWindowsPath
 
 from . import RULES_VERSION
 from .exitcodes import ERROR, OK, select_exit_code
-from .regex_engine import Finding, _included, scan_rule
+from .regex_engine import Finding, _glob_match, _included, scan_rule
 from .report import make_report, text_report, write_json
 from .review import ReviewToolError, check_fixes, extract_review, validate_review
 from .rules import Rule, RuleError, load_rules
-from .policy import (forgiveness_for_line, load_policy, malformed_forgiveness,
+from .policy import (_comment_segments, forgiveness_for_line, load_policy, malformed_forgiveness,
                      fingerprint, overlay_rules)
 from .git_tools import (baseline_counts, git, load_baseline, mark_new, merge_base, resolve_ref,
                         worktree)
@@ -90,23 +93,18 @@ def _scan(args: argparse.Namespace) -> int:
     repo = args.repo.resolve()
     if not repo.is_dir():
         raise RuleError(f"{repo}: repo: directory does not exist or is unreadable")
-    rules = _rules(repo, args.rules_dir, args.rule)
-    policy = load_policy(repo, rules)
-    rules = overlay_rules(rules, policy)
-    findings = [finding for rule in rules for finding in scan_rule(repo, rule, policy.excludes)]
-    findings = _forgive_findings(repo, rules, findings)
-    report = make_report(repo, rules, findings)
+    report = _scan_report(repo, args.rules_dir, args.rule)
     baseline_data = load_baseline(args.baseline) if args.baseline is not None else None
-    if args.fail_on == "new" and baseline_data is None:
-        baseline_data = _base_report_path(args, repo)
-    if baseline_data is not None:
-        mark_new(report, baseline_data)
     if args.fail_on == "new":
         if args.base is None and git(repo, "show-ref", "--verify", "--quiet", "refs/remotes/origin/main", check=False).returncode != 0:
             raise RuleError("--fail-on new needs --base REF or an existing origin/main")
+        if baseline_data is None:
+            baseline_data = _base_report_path(args, repo)
         report["policy_tampering"] = _policy_tampering(repo, args.base or "origin/main")
         if report["policy_tampering"] and args.allow_policy_change:
             report["warnings"] = ["policy changes were allowed for this scan"]
+    if baseline_data is not None:
+        mark_new(report, baseline_data)
     if args.json_out:
         write_json(report, args.json_out)
     if args.json_out != "-":
@@ -118,46 +116,81 @@ def _scan(args: argparse.Namespace) -> int:
     return select_exit_code(findings=failed)
 
 
-def _forgive_findings(repo: Path, rules: list[Rule], findings: list[Finding]) -> list[Finding]:
+def _forgive_findings(repo: Path, rules: list[Rule], findings: list[Finding],
+                      excludes: tuple[str, ...] = ()) -> list[Finding]:
     """Apply scoped source comments and emit malformed-comment meta findings."""
     languages = {rule.id: rule.language for rule in rules}
     result: list[Finding] = []
-    malformed: list[Finding] = []
     by_path: dict[str, list[str]] = {}
     for item in findings:
         if item.path not in by_path:
             by_path[item.path] = (repo / item.path).read_text(encoding="utf-8", errors="replace").splitlines()
         forgiven = forgiveness_for_line(by_path[item.path], item.line, languages[item.sin], item.sin)
         result.append(replace(item, forgiven=forgiven))
+    malformed = _malformed_findings(repo, by_path, excludes)
+    if malformed and not any(rule.id == "sins-forgive-without-reason" for rule in rules):
+        rules.append(Rule("sins-forgive-without-reason", 1, "add a reason to forgiveness comments",
+                          "Forgiveness comments must explain why the finding is accepted.", "text",
+                          ("**/*",), (), "minor", False, None, "regex", "", "", None, None,
+                          None, (), (), (), (), None, Path("<built-in-meta>")))
+    result.extend(malformed)
+    return result
+
+
+def _read_scannable_lines(file: Path) -> list[str] | None:
+    """Read a bounded, non-binary regular file into lines, or None if skipped."""
+    try:
+        info = file.lstat()
+        if not stat.S_ISREG(info.st_mode) or info.st_size > 2 * 1024 * 1024:
+            return None
+        raw = file.read_bytes()
+    except OSError:
+        return None
+    if len(raw) > 2 * 1024 * 1024 or b"\0" in raw[:8192]:
+        return None
+    return raw.decode("utf-8", errors="replace").splitlines()
+
+
+def _malformed_findings(repo: Path, by_path: dict[str, list[str]],
+                        excludes: tuple[str, ...]) -> list[Finding]:
+    """Find malformed forgiveness comments in eligible source and text files."""
     extensions = {".py": "python", ".cpp": "cpp", ".cc": "cpp", ".c": "cpp", ".h": "cpp",
                   ".hpp": "cpp", ".cxx": "cpp", ".hh": "cpp", ".hxx": "cpp", ".c++": "cpp",
                   ".h++": "cpp", ".txt": "text", ".toml": "text", ".yaml": "text", ".yml": "text",
                   ".sh": "text", ".md": "text"}
+    malformed: list[Finding] = []
     for directory, dirs, files in os.walk(repo):
-        dirs[:] = sorted(name for name in dirs if name not in {".git", ".sft", "node_modules", "build", "dist", "target", "obj"})
-        for name in files:
+        dirs[:] = sorted(name for name in dirs if name not in {
+            ".git", ".sft", "node_modules", "build", "dist", "target", "obj", "__pycache__", ".venv"})
+        for name in sorted(files):
             file = Path(directory) / name
             language = extensions.get(file.suffix.lower())
-            if file.stat().st_size > 2 * 1024 * 1024:
+            if language is None:
                 continue
             relative = file.relative_to(repo).as_posix()
-            lines = by_path.get(relative)
+            if any(_glob_match(relative, pattern) for pattern in excludes):
+                continue
+            lines = by_path[relative] if relative in by_path else _read_scannable_lines(file)
             if lines is None:
-                lines = file.read_text(encoding="utf-8", errors="replace").splitlines()
-            for number, line in enumerate(lines, 1):
-                if malformed_forgiveness(line, language):
-                    malformed.append(Finding("sins-forgive-without-reason", relative, number, 1, number,
-                                             len(line) + 1, "forgiveness comment requires a reason", "minor",
-                                             fingerprint=fingerprint("sins-forgive-without-reason", relative,
-                                                                     line, lines[number - 2] if number > 1 else "<bof>")))
-    if malformed:
-        if not any(rule.id == "sins-forgive-without-reason" for rule in rules):
-            rules.append(Rule("sins-forgive-without-reason", 1, "add a reason to forgiveness comments",
-                              "Forgiveness comments must explain why the finding is accepted.", "text",
-                              ("**/*",), (), "minor", False, None, "regex", "", "", None, None,
-                              None, (), (), (), (), None, Path("<built-in-meta>")))
-        result.extend(malformed)
-    return result
+                continue
+            malformed.extend(_malformed_file_findings(relative, language, lines))
+    return malformed
+
+
+def _malformed_file_findings(relative: str, language: str,
+                             lines: list[str]) -> list[Finding]:
+    """Build meta-sin findings for malformed comments in one file."""
+    findings: list[Finding] = []
+    anchor = "<bof>"
+    for number, line in enumerate(lines, 1):
+        if malformed_forgiveness(line, language):
+            findings.append(Finding("sins-forgive-without-reason", relative, number, 1, number,
+                                    len(line) + 1, "forgiveness comment requires a reason", "minor",
+                                    fingerprint=fingerprint("sins-forgive-without-reason", relative,
+                                                            line, anchor)))
+        if line.strip():
+            anchor = line
+    return findings
 
 
 def _base_report_path(args: argparse.Namespace, repo: Path) -> dict[str, Counter[str]]:
@@ -165,12 +198,7 @@ def _base_report_path(args: argparse.Namespace, repo: Path) -> dict[str, Counter
     ref = args.base or "origin/main"
     base_commit = merge_base(repo, ref)
     with worktree(repo, base_commit) as snapshot:
-        base_rules = _rules(snapshot, args.rules_dir, args.rule)
-        policy = load_policy(snapshot, base_rules)
-        effective = overlay_rules(base_rules, policy)
-        findings = [entry for rule in effective for entry in scan_rule(snapshot, rule, policy.excludes)]
-        report = make_report(snapshot, effective, _forgive_findings(snapshot, effective, findings))
-        return load_baseline_data(baseline_counts(report))
+        return load_baseline_data(baseline_counts(_scan_report(snapshot, args.rules_dir, args.rule)))
 
 
 def load_baseline_data(data: dict) -> dict[str, Counter[str]]:
@@ -178,20 +206,26 @@ def load_baseline_data(data: dict) -> dict[str, Counter[str]]:
     return {sin_id: Counter(counts) for sin_id, counts in data["counts"].items()}
 
 
-_SUPPRESSION = re.compile(r"sins:\s*forgive|forgive\s+me|nosemgrep|\bnosem\b|ast-grep-ignore|\bnoqa\b|NOLINT")
+_SUPPRESSION = re.compile(r"sins:\s*forgive\b|nosemgrep|\bnosem\b|ast-grep-ignore|\bnoqa\b|NOLINT")
+_CPP_FORGIVE_ME = re.compile(r"\bforgive\s+me\b")
+_CPP_SUFFIXES = {".cpp", ".cc", ".c", ".h", ".hpp", ".cxx", ".hh", ".hxx", ".c++", ".h++",
+                 ".js", ".ts", ".jsx", ".tsx", ".go", ".rs", ".java", ".cs", ".kt", ".swift"}
+_HASH_CODE_SUFFIXES = {".py", ".sh", ".bash", ".rb", ".pl", ".r"}
 
 
 def _policy_tampering(repo: Path, base_ref: str) -> list[dict]:
     """Find added suppressions and changed policy artifacts since merge-base."""
     base = merge_base(repo, base_ref)
-    diff = git(repo, "diff", "--no-ext-diff", "--unified=0", base, "--", ".").stdout
-    return (_added_suppressions(diff) + _tracked_policy_tampering(repo, base)
+    diff = git(repo, "diff", "--no-ext-diff", "--no-renames", "--src-prefix=a/", "--dst-prefix=b/",
+               "--unified=0", base, "--", ".").stdout
+    return (_added_suppressions(repo, diff) + _tracked_policy_tampering(repo, base)
             + _untracked_tampering(repo))
 
 
-def _added_suppressions(diff: str) -> list[dict]:
+def _added_suppressions(repo: Path, diff: str) -> list[dict]:
     """Parse added diff lines for suppression markers."""
     entries: list[dict] = []
+    py_cache: dict[str, dict[int, list[str]] | None] = {}
     path = ""
     line = 0
     for content in diff.splitlines():
@@ -201,7 +235,7 @@ def _added_suppressions(diff: str) -> list[dict]:
             match = re.search(r"\+(\d+)", content)
             line = int(match.group(1)) if match else 0
         elif content.startswith("+") and not content.startswith("+++"):
-            entries.extend(_suppression_entries(path, line, content[1:]))
+            entries.extend(_suppression_entries(path, line, content[1:], repo, py_cache))
             line += 1
         elif content.startswith(" "):
             line += 1
@@ -211,13 +245,13 @@ def _added_suppressions(diff: str) -> list[dict]:
 def _tracked_policy_tampering(repo: Path, base: str) -> list[dict]:
     """Classify weakening changes to tracked policy files."""
     entries = []
-    names = git(repo, "diff", "--name-status", base, "--", ".").stdout.splitlines()
+    names = git(repo, "diff", "--name-status", "--no-renames", base, "--", ".").stdout.splitlines()
     for row in names:
         bits = row.split("\t")
         status = bits[0]
         changed = bits[-1]
-        tampered = "baseline" in changed and changed.startswith(".sins/")
-        detail = "baseline file changed"
+        tampered = False
+        detail = ""
         if changed == ".sins/policy.toml":
             old = git(repo, "show", f"{base}:{changed}", check=False).stdout
             current_path = repo / changed
@@ -233,9 +267,10 @@ def _tracked_policy_tampering(repo: Path, base: str) -> list[dict]:
                 new_path = repo / changed
                 new = new_path.read_text(encoding="utf-8") if new_path.is_file() else ""
                 tampered = _rule_narrowed(old, new)
-                detail = "rule match or paths changed"
-        elif changed.startswith(".sins/") and "baseline" not in changed:
-            tampered = False
+                detail = "rule enforcement, match, or paths weakened"
+        elif changed.startswith(".sins/") and "baseline" in changed:
+            tampered = True
+            detail = "baseline file changed"
         if tampered:
             entries.append({"kind": "sins-policy-change", "path": changed, "line": 0,
                             "detail": f"{detail} ({status})"})
@@ -245,28 +280,88 @@ def _tracked_policy_tampering(repo: Path, base: str) -> list[dict]:
 def _untracked_tampering(repo: Path) -> list[dict]:
     """Inspect untracked policy and source files omitted by git diff."""
     entries = []
-    status_rows = git(repo, "status", "--porcelain", "-uall").stdout.splitlines()
-    for row in status_rows:
+    py_cache: dict[str, dict[int, list[str]] | None] = {}
+    records = git(repo, "status", "--porcelain", "-uall", "-z").stdout.split("\0")
+    index = 0
+    while index < len(records):
+        row = records[index]
+        index += 1
+        if not row:
+            continue
+        if len(row) >= 2 and (row[0] in "RC" or row[1] in "RC"):
+            index += 1
+            continue
         if row.startswith("?? "):
             relative = row[3:]
-            if relative.startswith(".sins/") and "baseline" in relative:
-                entries.append({"kind": "sins-policy-change", "path": relative, "line": 0,
-                                "detail": "untracked .sins artifact"})
-            elif relative == ".sins/policy.toml":
-                if _policy_weakened("", (repo / relative).read_text(encoding="utf-8"), repo):
-                    entries.append({"kind": "sins-policy-change", "path": relative, "line": 0,
-                                    "detail": "new policy disables or weakens a sin"})
-            candidate = repo / relative
-            if candidate.is_file():
-                for number, text in enumerate(candidate.read_text(encoding="utf-8", errors="replace").splitlines(), 1):
-                    entries.extend(_suppression_entries(relative, number, text))
+            entries.extend(_inspect_untracked(repo, relative, py_cache))
     return entries
 
 
-def _suppression_entries(path: str, line: int, text: str) -> list[dict]:
-    """Create tampering rows for suppression markers found on one added line."""
-    return [{"kind": "added-suppression", "path": path, "line": line, "detail": match.group(0)}
-            for match in _SUPPRESSION.finditer(text)]
+def _inspect_untracked(repo: Path, relative: str,
+                       py_cache: dict[str, dict[int, list[str]] | None]) -> list[dict]:
+    """Inspect one bounded regular untracked file and any policy artifact."""
+    entries: list[dict] = []
+    if relative.startswith(".sins/") and "baseline" in relative and not relative.startswith(".sins/rules/"):
+        entries.append({"kind": "sins-policy-change", "path": relative, "line": 0,
+                        "detail": "untracked .sins artifact"})
+    candidate = repo / relative
+    lines = _read_scannable_lines(candidate)
+    if lines is None:
+        return entries
+    if relative == ".sins/policy.toml" and _policy_weakened(
+            "", "\n".join(lines), repo):
+        entries.append({"kind": "sins-policy-change", "path": relative, "line": 0,
+                        "detail": "new policy disables or weakens a sin"})
+    for number, text in enumerate(lines, 1):
+        entries.extend(_suppression_entries(relative, number, text, repo, py_cache))
+    return entries
+
+
+def _comment_language(path: str) -> str | None:
+    """Return supported source comment syntax, excluding docs and data files."""
+    suffix = Path(path).suffix.lower()
+    if suffix == ".py":
+        return "python"
+    if suffix in _CPP_SUFFIXES:
+        return "cpp"
+    return "hash" if suffix in _HASH_CODE_SUFFIXES else None
+
+
+def _python_comments(repo: Path, path: str) -> dict[int, list[str]] | None:
+    """Tokenize real Python comments by source line."""
+    try:
+        lines = _read_scannable_lines(repo / path)
+        if lines is None:
+            return None
+        comments: dict[int, list[str]] = {}
+        for token in tokenize.generate_tokens(io.StringIO("\n".join(lines) + "\n").readline):
+            if token.type == tokenize.COMMENT:
+                comments.setdefault(token.start[0], []).append(token.string[1:])
+        return comments
+    except (OSError, tokenize.TokenError, IndentationError):
+        return None
+
+
+def _suppression_entries(path: str, line: int, text: str, repo: Path,
+                         py_cache: dict[str, dict[int, list[str]] | None]) -> list[dict]:
+    """Create tampering rows only for suppression markers in real comments."""
+    language = _comment_language(path)
+    if language is None:
+        return []
+    if language == "python":
+        if path not in py_cache:
+            py_cache[path] = _python_comments(repo, path)
+        parsed = py_cache[path]
+        segments = [("hash", part) for part in parsed.get(line, ())] if parsed is not None else []
+    else:
+        segments = _comment_segments(text, "cpp" if language == "cpp" else "text")
+    matches = []
+    for _kind, comment in segments:
+        matches.extend(match.group(0) for match in _SUPPRESSION.finditer(comment))
+        if language == "cpp":
+            matches.extend(match.group(0) for match in _CPP_FORGIVE_ME.finditer(comment))
+    return [{"kind": "added-suppression", "path": path, "line": line, "detail": value}
+            for value in matches]
 
 
 def _policy_weakened(old_text: str, new_text: str, repo: Path) -> bool:
@@ -289,7 +384,7 @@ def _policy_weakened(old_text: str, new_text: str, repo: Path) -> bool:
         new_threshold = current.get("mortal_threshold", default_threshold)
         if prior_threshold is not None and (new_threshold is None or new_threshold > prior_threshold):
             return True
-        if current.get("enabled", True) is False:
+        if prior.get("enabled", True) is True and current.get("enabled", True) is False:
             return True
         if prior.get("mortal", default_mortal) is True and current.get("mortal", default_mortal) is False:
             return True
@@ -334,25 +429,39 @@ def _rule_narrowed(old_text: str, new_text: str) -> bool:
         old, new = tomllib.loads(old_text), tomllib.loads(new_text)
     except tomllib.TOMLDecodeError:
         return True
+    if (old.get("id") != new.get("id")
+            or (old.get("enabled", True) is True and new.get("enabled", True) is False)
+            or (old.get("mortal", False) is True and new.get("mortal", False) is False)):
+        return True
+    old_threshold, new_threshold = old.get("mortal_threshold"), new.get("mortal_threshold")
+    if old_threshold is not None and (new_threshold is None or new_threshold > old_threshold):
+        return True
     return old.get("match") != new.get("match") or old.get("paths") != new.get("paths")
 
 
 def _scan_report(repo: Path, dirs: list[Path], selected: list[str]) -> dict:
     """Scan a snapshot and return its report without printing."""
-    rules = _rules(repo, dirs, selected)
-    policy = load_policy(repo, rules)
+    all_rules = load_rules(repo, dirs, [], require_implemented=False)
+    rules = load_rules(repo, dirs, selected)
+    policy = load_policy(repo, all_rules)
     effective = overlay_rules(rules, policy)
     findings = [finding for rule in effective for finding in scan_rule(repo, rule, policy.excludes)]
-    return make_report(repo, effective, _forgive_findings(repo, effective, findings))
+    return make_report(repo, effective,
+                       _forgive_findings(repo, effective, findings, policy.excludes))
 
 
 def _baseline_write(args: argparse.Namespace) -> int:
     """Write a baseline fingerprint multiset for the selected repository."""
     repo = args.repo.resolve()
+    if not repo.is_dir():
+        raise RuleError(f"{repo}: repo: directory does not exist or is unreadable")
     report = _scan_report(repo, [], [])
     target = args.out if args.out.is_absolute() else repo / args.out
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(json.dumps(baseline_counts(report), indent=2) + "\n", encoding="utf-8")
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(json.dumps(baseline_counts(report), indent=2) + "\n", encoding="utf-8")
+    except OSError as exc:
+        raise RuleError(f"{target}: cannot write baseline: {exc}") from exc
     print(target)
     return OK
 
@@ -361,7 +470,7 @@ def _diff(args: argparse.Namespace) -> int:
     """Compare a detached base snapshot with a ref or the untouched worktree."""
     repo = args.repo.resolve()
     base_ref = args.base
-    base_revision = merge_base(repo, base_ref)
+    base_revision = merge_base(repo, base_ref, args.head or "HEAD")
     base_snapshot = worktree(repo, base_revision)
     with base_snapshot as base_path:
         before = _scan_report(base_path, args.rules_dir, args.rule)
@@ -370,7 +479,6 @@ def _diff(args: argparse.Namespace) -> int:
             after = _scan_report(head_path, args.rules_dir, args.rule)
     else:
         after = _scan_report(repo, args.rules_dir, args.rule)
-    mark_new(after, {sin["id"]: Counter() for sin in before["sins"]})
     before_counts = _fingerprint_counts(before)
     after_counts = _fingerprint_counts(after)
     rows = []
