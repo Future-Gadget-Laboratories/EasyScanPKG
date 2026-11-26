@@ -197,6 +197,7 @@ while Sonar indexes. Re-query with `./bin/sonar-issues --local list` or
 | List registered scanners | `./bin/easyscan-scan --list-scanners` |
 | List / resolve issues | `./bin/sonar-issues --local list` / `resolve ISSUE` |
 | Export issue checklist | `./bin/sonar-issues export --workspace "$PWD" --refresh` |
+| Readable HTML/markdown report | `./bin/easyscan-report --workspace "$PWD" [--changed-from REF] [--fail-on-severity medium]` |
 | Quality profile XML | `./bin/sonar-profile import FILE.xml --local --bind-project KEY` |
 | Language probe | `./bin/sonar-languages --local` / `--install-cxx` |
 | Credentials (remote) | `./bin/sonar-credentials --cli --test` |
@@ -450,6 +451,33 @@ Schema: `easyscan.issue-checklist/v2`. Each issue includes `source`, `severity`,
 `open_count` is `0`.
 
 Optional remediation hints: `templates/remediation.easyscanpkg.json`.
+
+### Readable scan report (`easyscan-report`)
+
+`easyscan-report` turns the checklist JSON into a report grouped by file, then
+by rule, with severity counts, a rule summary, and a short fix hint from the
+bundled remediation template. It reads only `.sft/issue-checklist.json` and
+makes no network calls. Credentials and server URLs are never printed; issue
+links keep only plain http(s) URLs with any userinfo removed.
+
+```bash
+./bin/easyscan-report --workspace "$PWD"                          # .sft/report/easyscan-report.{html,md} + terminal summary
+./bin/easyscan-report --workspace "$PWD" --format markdown        # one format only (html, markdown, both)
+./bin/easyscan-report --workspace "$PWD" --changed-from main      # adds "New in changed files" (git diff vs ref)
+./bin/easyscan-report --workspace "$PWD" --fail-on-severity medium  # exit 3 if any open finding is medium+
+```
+
+- HTML is one self-contained file: inline CSS, no scripts, no external assets.
+- Markdown uses the same `- [ ]` checkboxes as the issue checklist.
+- `--changed-from REF` lists findings in files that differ from `REF`
+  (tracked working-tree changes and untracked files included). Gating still
+  covers every open finding.
+- Resolved and closed findings are left out of the counts, groups, and gate,
+  and the report says how many were hidden.
+- Reports land in `.sft/report/` by default (git-ignored with `.sft/`).
+  Use `--out-dir` to change that.
+- The report reads the Sonar-plus-scanner checklist. Sins results stay in
+  `.sins/out/` and are not included.
 
 ## Multi-project contexts
 

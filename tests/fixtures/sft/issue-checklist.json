@@ -1,0 +1,79 @@
+{
+  "schema": "easyscan.issue-checklist/v2",
+  "generated_at": "2026-01-01T00:00:00+00:00",
+  "server_url": "http://user:secret@sonar.example.test:9000",
+  "project_key": "demo-report",
+  "context": "local",
+  "open_count": 5,
+  "resolved": false,
+  "filters": {},
+  "sources_run": ["sonar"],
+  "sources_skipped": {},
+  "issues": [
+    {
+      "key": "sonar:aaa111",
+      "source": "sonar",
+      "severity": "MAJOR",
+      "type": "CODE_SMELL",
+      "rule": "python:S1481",
+      "message": "Remove the unused local variable \"<b>tmp</b>\".",
+      "file": "src/app.py",
+      "line": 12,
+      "status": "OPEN",
+      "done": false,
+      "url": "http://user:secret@sonar.example.test:9000/project/issues?id=demo-report&open=AAA111&resolved=false"
+    },
+    {
+      "key": "sonar:aaa222",
+      "source": "sonar",
+      "severity": "CRITICAL",
+      "type": "CODE_SMELL",
+      "rule": "python:S3776",
+      "message": "Refactor this function to reduce its cognitive complexity.",
+      "file": "src/app.py",
+      "line": 3,
+      "status": "OPEN",
+      "done": false,
+      "url": "javascript:alert(1)"
+    },
+    {
+      "key": "sonar:aaa333",
+      "source": "sonar",
+      "severity": "MAJOR",
+      "type": "CODE_SMELL",
+      "rule": "python:S1481",
+      "message": "Remove the unused local variable \"scratch\".",
+      "file": "src/app.py",
+      "line": 20,
+      "status": "OPEN",
+      "done": false,
+      "url": null
+    },
+    {
+      "key": "sonar:aaa444",
+      "source": "sonar",
+      "severity": "MINOR",
+      "type": "CODE_SMELL",
+      "rule": "python:S1066",
+      "message": "Merge this if statement with the enclosing one.",
+      "file": "./lib/util.py",
+      "line": 7,
+      "status": "OPEN",
+      "done": false,
+      "url": "https://sonar.example.test/project/issues?id=demo-report&open=AAA444"
+    },
+    {
+      "key": "custom:0f3a9c1d2e4b",
+      "source": "ruff",
+      "severity": null,
+      "type": "CODE_SMELL",
+      "rule": "custom:unmapped-rule",
+      "message": "Rule without a bundled hint.",
+      "file": "docs/notes.md",
+      "line": "-",
+      "status": "OPEN",
+      "done": false,
+      "url": null
+    }
+  ]
+}
