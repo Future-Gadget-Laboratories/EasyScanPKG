@@ -144,6 +144,17 @@ SFT_SONAR_ON_DEMAND=1
 | `--skip-tests` | Do not run the unit-test readiness item |
 | `--json` | Machine-readable report |
 
+## Local sin scanner
+
+The `sins` CLI checks TOML based Paladin-style rules with a local regex engine.
+See [docs/SINS.md](docs/SINS.md) for rule authoring, examples, reports, exit
+codes, and the S1–S12 roadmap.
+
+```bash
+./bin/sins scan --repo .
+./bin/sins test
+```
+
 ## Core workflow
 
 ```bash

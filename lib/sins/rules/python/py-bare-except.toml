@@ -1,0 +1,20 @@
+id = "py-bare-except"
+version = 1
+phrase = "catch every exception with a bare except"
+description = "Bare except clauses can swallow process-control exceptions."
+language = "python"
+severity = "major"
+mortal = false
+engine = "regex"
+tags = ["reliability"]
+
+[paths]
+include = ["**/*.py"]
+exclude = []
+
+[match]
+pattern = "^\\s*except\\s*:"
+
+[examples]
+bad = ["try:\n    work()\nexcept:\n    pass\n"]
+good = ["try:\n    work()\nexcept ValueError:\n    pass\n"]
