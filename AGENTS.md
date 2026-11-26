@@ -9,6 +9,7 @@ Standard dev commands are documented in `README.md` and `CONTRIBUTING.md`:
 - Unit tests: `python3 -m unittest discover -s tests -v`
 - Offline readiness/lint: `./bin/easyscan-check --offline`
 - Full readiness: `./bin/easyscan-check` (needs Docker + local server)
+- Readable report from an exported checklist (no network): `./bin/easyscan-report --workspace "$PWD"` (writes `.sft/report/`)
 
 ## Cursor Cloud specific instructions
 
