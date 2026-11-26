@@ -15,6 +15,7 @@ description: >-
 | **Primary checklist** | `<workspace>/.sft/issue-checklist.md` |
 | JSON twin | `<workspace>/.sft/issue-checklist.json` |
 | Critical-only (optional) | `<workspace>/.sft/issue-checklist-critical.md` |
+| Readable report (optional) | `<workspace>/.sft/report/easyscan-report.{html,md}` (`easyscan-report --workspace "$PWD"`) |
 | Human playbook | `EasyScanPKG/docs/FIX_QUEUE.md` |
 | Rule → how to fix | `EasyScanPKG/templates/remediation.easyscanpkg.json` |
 | Sonar UI | `http://127.0.0.1:9000/project/issues?id=<project_key>&resolved=false` |

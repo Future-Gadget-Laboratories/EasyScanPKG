@@ -470,7 +470,10 @@ links keep only plain http(s) URLs with any userinfo removed.
 - HTML is one self-contained file: inline CSS, no scripts, no external assets.
 - Markdown uses the same `- [ ]` checkboxes as the issue checklist.
 - `--changed-from REF` lists findings in files that differ from `REF`
-  (working tree included). Gating still covers every open finding.
+  (tracked working-tree changes and untracked files included). Gating still
+  covers every open finding.
+- Resolved and closed findings are left out of the counts, groups, and gate,
+  and the report says how many were hidden.
 - Reports land in `.sft/report/` by default (git-ignored with `.sft/`).
   Use `--out-dir` to change that.
 - The report reads the Sonar-plus-scanner checklist. Sins results stay in

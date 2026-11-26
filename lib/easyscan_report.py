@@ -10,9 +10,11 @@ from __future__ import annotations
 
 import html
 import json
+import re
 import subprocess
+from collections.abc import Iterable, Mapping
 from pathlib import Path
-from typing import Any, Iterable, Mapping
+from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
 from scanners.gate import SEVERITY_RANK, gated_issues
@@ -25,19 +27,23 @@ REMEDIATION_TEMPLATE = Path(__file__).resolve().parents[1] / "templates" / "reme
 NO_HINT = "No bundled fix hint for this rule; open the issue link for the rule's description."
 NO_SUMMARY = "Rule description not bundled."
 FORMATS = ("html", "markdown", "both")
+# Same closed states as scanners.gate.gated_issues, so counts and the gate agree.
+CLOSED_STATUSES = frozenset({"RESOLVED", "CLOSED"})
+# Whitespace, control characters, and characters that would break HTML or Markdown links.
+_UNSAFE_LINK = re.compile(r"[\s\x00-\x1f\x7f<>\"'`\\]")
 
 _CSS = """
-body{font-family:system-ui,sans-serif;margin:2rem auto;max-width:1000px;color:#1d1d1f;line-height:1.45}
+body{font-family:system-ui,sans-serif;margin:2rem auto;max-width:1000px;color:#1d1d1f;background:#fff;line-height:1.45}
 h1{font-size:1.5rem}h2{margin-top:2rem;border-bottom:1px solid #ddd;padding-bottom:.3rem}
 table{border-collapse:collapse}td,th{padding:.25rem .8rem;border-bottom:1px solid #eee;text-align:left}
 th.n,td.n{text-align:right}code{background:#f4f4f5;padding:0 .25rem;border-radius:3px}
 .badge{display:inline-block;min-width:4.5rem;text-align:center;color:#fff;border-radius:3px;font-size:.8rem;padding:0 .3rem}
-.BLOCKER{background:#7a0c2e}.CRITICAL{background:#c0392b}.MAJOR{background:#d35400}
-.MINOR{background:#2471a3}.INFO{background:#5d6d7e}.UNKNOWN{background:#7f8c8d}
+.BLOCKER{background:#7a0c2e}.CRITICAL{background:#c0392b}.MAJOR{background:#a84300}
+.MINOR{background:#2471a3}.INFO{background:#5d6d7e}.UNKNOWN{background:#596566}
 .pass{color:#1e7b34;font-weight:600}.fail{color:#b00020;font-weight:600}
 details{margin:.6rem 0;border-left:3px solid #ddd;padding-left:.7rem}summary{cursor:pointer;font-weight:600}
 .rule{margin:.5rem 0 .5rem 1rem}.hint{color:#555;font-size:.92rem}.changed{color:#8a4b00;font-size:.85rem}
-li{margin:.2rem 0}.src{color:#777;font-size:.85rem}
+li{margin:.2rem 0}.src{color:#595959;font-size:.85rem}
 """
 
 
@@ -76,31 +82,49 @@ def norm_path(raw: Any) -> str:
     return text or "(unknown)"
 
 
+def _git_paths(workspace: Path, args: list[str]) -> list[str]:
+    """Run a read-only git command that prints NUL-separated paths (``-z``)."""
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(workspace), "-c", "core.quotePath=false", *args],
+            capture_output=True, text=True, check=False, timeout=60,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise ReportError(f"cannot run git for --changed-from: {exc}") from exc
+    if proc.returncode != 0:
+        raise ReportError(f"git {args[0]} failed: {proc.stderr.strip()[:200]}")
+    return [entry for entry in proc.stdout.split("\0") if entry.strip()]
+
+
 def changed_files(workspace: Path, ref: str) -> set[str]:
-    """Files that differ from ``ref`` (working tree included), relative to workspace."""
+    """Tracked files that differ from ``ref`` plus untracked files, relative to workspace."""
     if not ref or ref.startswith("-"):
         raise ReportError(f"invalid git ref {ref!r}")
-    proc = subprocess.run(
-        ["git", "-C", str(workspace), "diff", "--name-only", "--relative", ref, "--"],
-        capture_output=True, text=True, check=False, timeout=60,
-    )
-    if proc.returncode != 0:
-        raise ReportError(f"git diff against {ref!r} failed: {proc.stderr.strip()[:200]}")
-    return {norm_path(line) for line in proc.stdout.splitlines() if line.strip()}
+    diff = _git_paths(workspace, ["diff", "--name-only", "-z", "--relative", ref, "--"])
+    untracked = _git_paths(workspace, ["ls-files", "--others", "--exclude-standard", "-z"])
+    return {norm_path(entry) for entry in (*diff, *untracked)}
 
 
 def safe_link(raw: Any) -> str | None:
-    """Keep only plain http(s) links; userinfo (credentials) is stripped."""
+    """Keep only plain http(s) links; userinfo (credentials) is stripped.
+
+    Links with whitespace, control characters, or quotes/angle brackets are dropped.
+    Parentheses are percent-encoded so a link cannot close the Markdown ``[open](...)``.
+    """
     if not raw:
         return None
+    text = str(raw).strip()
+    if not text or _UNSAFE_LINK.search(text):
+        return None
     try:
-        parts = urlsplit(str(raw))
+        parts = urlsplit(text)
         if parts.scheme not in ("http", "https") or not parts.hostname:
             return None
         netloc = parts.netloc.rsplit("@", 1)[-1]
     except ValueError:
         return None
-    return urlunsplit((parts.scheme, netloc, parts.path, parts.query, ""))
+    link = urlunsplit((parts.scheme, netloc, parts.path, parts.query, ""))
+    return link.replace("(", "%28").replace(")", "%29")
 
 
 def _rank(issue: Mapping[str, Any]) -> int:
@@ -182,7 +206,10 @@ def build_report(
     top: int = 5,
 ) -> dict[str, Any]:
     remediation = remediation or {}
-    issues = normalize_issues(checklist.get("issues") or [], changed)
+    everything = normalize_issues(checklist.get("issues") or [], changed)
+    issues = [issue for issue in everything if issue["status"] not in CLOSED_STATUSES]
+    declared = checklist.get("open_count")
+    open_count = declared if isinstance(declared, int) and not isinstance(declared, bool) else len(issues)
     counts = {level: 0 for level in (*SEVERITY_ORDER, UNKNOWN)}
     for issue in issues:
         counts[issue["severity"]] += 1
@@ -194,8 +221,9 @@ def build_report(
         "context": checklist.get("context") or None,
         "generated_at": checklist.get("generated_at") or None,
         "sources_run": [str(s) for s in checklist.get("sources_run") or []],
-        "open_count": checklist.get("open_count", len(issues)),
+        "open_count": open_count,
         "listed": len(issues),
+        "resolved_hidden": len(everything) - len(issues),
         "counts": counts,
         "top_files": [(g["file"], g["count"], g["max_severity"]) for g in groups[: max(top, 0)]],
         "groups": groups,
@@ -227,7 +255,9 @@ def _meta(report: Mapping[str, Any]) -> list[str]:
         f"- sources_run: `{sources}`",
         f"- open findings: **{report['listed']}** (checklist open_count {report['open_count']})",
     ]
-    if report["open_count"] != report["listed"]:
+    if report["resolved_hidden"]:
+        lines.append(f"- resolved or closed findings hidden: {report['resolved_hidden']}")
+    if report["open_count"] > report["listed"]:
         lines.append("- note: the checklist lists fewer findings than its open_count; re-export with a higher limit")
     return lines
 
@@ -285,6 +315,22 @@ def _h(value: Any) -> str:
     return html.escape(str(value), quote=True)
 
 
+def _html_meta(report: Mapping[str, Any]) -> str:
+    sources = ", ".join(report["sources_run"]) or "(none)"
+    items = [
+        f"project_key: <code>{_h(report['project_key'])}</code>",
+        f"context: <code>{_h(report['context'] or '(none)')}</code>",
+        f"generated_at: <code>{_h(report['generated_at'] or '(unknown)')}</code>",
+        f"sources_run: <code>{_h(sources)}</code>",
+        f"open findings: <strong>{report['listed']}</strong> (checklist open_count {_h(report['open_count'])})",
+    ]
+    if report["resolved_hidden"]:
+        items.append(f"resolved or closed findings hidden: {report['resolved_hidden']}")
+    if report["open_count"] > report["listed"]:
+        items.append("note: the checklist lists fewer findings than its open_count; re-export with a higher limit")
+    return "".join(f"<li>{item}</li>" for item in items)
+
+
 def _html_issue(issue: Mapping[str, Any]) -> str:
     link = f' <a href="{_h(issue["url"])}">open</a>' if issue["url"] else ""
     return (
@@ -328,12 +374,15 @@ def render_html(report: Mapping[str, Any]) -> str:
     if gate:
         verdict_class = "fail" if report["failing"] else "pass"
         gate_html = f'<p class="{verdict_class}">{_h(gate)}</p>'
-    meta = "".join(f"<li>{_h(line[2:])}</li>" for line in _meta(report))
     body = [
         f"<h1>EasyScan report: <code>{_h(report['project_key'])}</code></h1>",
-        f"<ul>{meta}</ul>",
+        f"<ul>{_html_meta(report)}</ul>",
         "<h2>Severity counts</h2>",
-        f'<table><tr><th>Severity</th><th class="n">Open</th></tr>{rows}</table>',
+        (
+            '<table><thead><tr><th scope="col">Severity</th>'
+            '<th scope="col" class="n">Open</th></tr></thead>'
+            f"<tbody>{rows}</tbody></table>"
+        ),
         gate_html,
     ]
     if report["changed_from"]:
@@ -347,7 +396,7 @@ def render_html(report: Mapping[str, Any]) -> str:
     return (
         "<!doctype html>\n<html lang=\"en\"><head><meta charset=\"utf-8\">"
         f"<title>EasyScan report: {_h(report['project_key'])}</title>"
-        f"<style>{_CSS}</style></head><body>\n" + "\n".join(body) + "\n</body></html>\n"
+        f"<style>{_CSS}</style></head><body><main>\n" + "\n".join(body) + "\n</main></body></html>\n"
     )
 
 
@@ -381,14 +430,15 @@ def write_reports(report: Mapping[str, Any], out_dir: Path, fmt: str) -> list[Pa
     if fmt not in FORMATS:
         raise ReportError(f"unknown format {fmt!r} (choose from: {', '.join(FORMATS)})")
     out_dir = Path(out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
-    written: list[Path] = []
+    planned: list[tuple[Path, str]] = []
     if fmt in ("html", "both"):
-        path = out_dir / f"{REPORT_BASENAME}.html"
-        path.write_text(render_html(report), encoding="utf-8")
-        written.append(path)
+        planned.append((out_dir / f"{REPORT_BASENAME}.html", render_html(report)))
     if fmt in ("markdown", "both"):
-        path = out_dir / f"{REPORT_BASENAME}.md"
-        path.write_text(render_markdown(report), encoding="utf-8")
-        written.append(path)
-    return written
+        planned.append((out_dir / f"{REPORT_BASENAME}.md", render_markdown(report)))
+    try:
+        out_dir.mkdir(parents=True, exist_ok=True)
+        for path, text in planned:
+            path.write_text(text, encoding="utf-8")
+    except OSError as exc:
+        raise ReportError(f"cannot write report to {out_dir}: {exc}") from exc
+    return [path for path, _ in planned]

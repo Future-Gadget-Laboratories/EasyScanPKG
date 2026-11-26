@@ -18,7 +18,7 @@ from _bootstrap import bootstrap
 
 bootstrap()
 
-from easyscan_report import (  # noqa: E402
+from easyscan_report import (
     FORMATS,
     ReportError,
     build_report,
@@ -28,7 +28,7 @@ from easyscan_report import (  # noqa: E402
     render_terminal,
     write_reports,
 )
-from scanners.gate import parse_threshold  # noqa: E402
+from scanners.gate import parse_threshold
 
 
 def main(argv: list[str] | None = None) -> int:
