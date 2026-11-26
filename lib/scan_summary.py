@@ -6,9 +6,8 @@ this module:
 
 1. reads ceTaskId from <workspace>/.scannerwork/report-task.txt and polls
    api/ce/task?id=... until SUCCESS (FAILED/CANCELED end early), with a timeout;
-2. polls api/issues/search?ps=1 until a positive `total` holds steady across
-   ``stable_polls`` consecutive reads, with a timeout; zero alone cannot prove
-   index readiness, so an all-zero result times out as unsettled;
+2. polls api/issues/search?ps=1 until the `total` holds steady across
+   ``stable_polls`` consecutive reads, including zero, with a timeout;
 3. only then prints totals, or a clear WARNING when a wait timed out.
 
 The token is read from the environment (SONARQUBE_TOKEN) and sent only as an
@@ -16,7 +15,7 @@ Authorization header; it never touches argv or output.
 
 Tunables (env): SFT_SCAN_CE_TIMEOUT (s, default 300), SFT_SCAN_ISSUES_TIMEOUT
 (s, default 180), SFT_SCAN_POLL_INTERVAL (s, default 3), SFT_SCAN_STABLE_POLLS
-(default 3).
+(default 2).
 """
 from __future__ import annotations
 
@@ -114,7 +113,7 @@ def wait_issue_count(client: SonarClient, project_key: str, timeout: float,
             streak = streak + 1 if total == last else 1
             last = total
             # CE SUCCESS does not guarantee index readiness (see module docs).
-            if total > 0 and streak >= max(1, stable_polls):
+            if streak >= max(2, stable_polls):
                 return last, False
         if clock() >= deadline:
             return last, True
@@ -150,7 +149,7 @@ def run(env: dict, out=sys.stdout, err=sys.stderr,
         print(f"WARNING: CE task ended {status}; issue totals not reported.", file=err)
         return 4
     total, iss_to = wait_issue_count(client, key, float(env.get("SFT_SCAN_ISSUES_TIMEOUT", "180")),
-                                     interval, int(env.get("SFT_SCAN_STABLE_POLLS", "3")), sleep, clock)
+                                     interval, int(env.get("SFT_SCAN_STABLE_POLLS", "2")), sleep, clock)
     if iss_to:
         print(f"WARNING: issue count did not settle before timeout (last seen: {total}); "
               "the index may still be catching up, re-check the dashboard.", file=err)

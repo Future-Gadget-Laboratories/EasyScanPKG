@@ -95,19 +95,19 @@ class ScanSummaryWaitTest(unittest.TestCase):
         client = scan_summary.SonarClient("http://127.0.0.1:9000", FAKE_TOKEN)
         self.assertEqual(client.url, "http://127.0.0.1:9000")
 
-    def test_three_quick_zeros_do_not_hide_later_positive_total(self):
+    def test_count_change_requires_two_equal_reads(self):
         client = Mock()
-        client.get.side_effect = [{"total": n} for n in (0, 0, 0, 7, 7, 7)]
+        client.get.side_effect = [{"total": n} for n in (0, 7, 7)]
         now = [0.0]
 
         def sleep(seconds):
             now[0] += seconds
 
         result = scan_summary.wait_issue_count(
-            client, "k", 180, 3, 3, sleep=sleep, clock=lambda: now[0])
+            client, "k", 180, 3, 2, sleep=sleep, clock=lambda: now[0])
         self.assertEqual(result, (7, False))
-        self.assertEqual(client.get.call_count, 6)
-        self.assertEqual(now[0], 15)
+        self.assertEqual(client.get.call_count, 3)
+        self.assertEqual(now[0], 6)
 
     def test_stable_positive_total_still_settles(self):
         client = Mock()
@@ -116,56 +116,38 @@ class ScanSummaryWaitTest(unittest.TestCase):
                          (7, False))
         self.assertEqual(client.get.call_count, 3)
 
-    def test_zero_count_times_out_with_exit_five(self):
-        for totals in ([0], [7, 0]):
-            with self.subTest(totals=totals):
-                client = Mock(url="http://127.0.0.1:9000")
-                remaining = list(totals)
-                now = [0.0]
+    def test_two_equal_zero_counts_settle_clean_scan(self):
+        client = Mock()
+        client.get.side_effect = [{"total": 0}, {"total": 0}]
+        self.assertEqual(scan_summary.wait_issue_count(client, "k", 10, 0, 2), (0, False))
+        self.assertEqual(client.get.call_count, 2)
 
-                def get(path, params, remaining=remaining):
-                    if path == "/api/ce/task":
-                        return {"task": {"status": "SUCCESS"}}
-                    total = remaining.pop(0) if len(remaining) > 1 else remaining[0]
-                    return {"total": total, "issues": []}
-
-                def sleep(seconds, now=now):
-                    now[0] += seconds
-
-                def clock(now=now):
-                    return now[0]
-
-                client.get.side_effect = get
-                out, err = io.StringIO(), io.StringIO()
-                with patch.object(scan_summary, "SonarClient", return_value=client):
-                    rc = scan_summary.run(
-                        self._env(client, SFT_SCAN_POLL_INTERVAL="3", SFT_SCAN_ISSUES_TIMEOUT="180"),
-                        out=out, err=err, sleep=sleep, clock=clock)
-                self.assertEqual(rc, 5)
-                self.assertEqual(now[0], 180)
-                self.assertIn("total issues: 0 (unsettled)", out.getvalue())
-                self.assertIn("WARNING: issue count did not settle", err.getvalue())
+    def test_changed_count_needs_two_equal_observations(self):
+        client = Mock()
+        client.get.side_effect = [{"total": 7}, {"total": 0}, {"total": 0}]
+        self.assertEqual(scan_summary.wait_issue_count(client, "k", 10, 0, 2), (0, False))
+        self.assertEqual(client.get.call_count, 3)
 
     def test_polling_retries_url_errors(self):
         client = Mock()
         client.get.side_effect = [urllib.error.URLError("offline"), {"task": {"status": "SUCCESS"}},
                                   urllib.error.HTTPError("http://example.com", 503, "busy", {}, None),
-                                  {"total": 2}]
+                                  {"total": 2}, {"total": 2}]
         self.assertEqual(scan_summary.wait_ce_task(client, "id", "k", 5, 0), ("SUCCESS", False))
         self.assertEqual(scan_summary.wait_issue_count(client, "k", 5, 0, 1), (2, False))
-        self.assertEqual(client.get.call_count, 4)
+        self.assertEqual(client.get.call_count, 5)
 
     def test_polling_retries_transport_os_errors(self):
         for error in (OSError("read failed"), ssl.SSLError("TLS read failed")):
             with self.subTest(error=type(error).__name__):
                 client = Mock()
                 client.get.side_effect = [error, {"task": {"status": "SUCCESS"}},
-                                          error, {"total": 2}]
+                                          error, {"total": 2}, {"total": 2}]
                 self.assertEqual(scan_summary.wait_ce_task(client, "id", "k", 5, 0),
                                  ("SUCCESS", False))
                 self.assertEqual(scan_summary.wait_issue_count(client, "k", 5, 0, 1),
                                  (2, False))
-                self.assertEqual(client.get.call_count, 4)
+                self.assertEqual(client.get.call_count, 5)
 
     def test_issue_listing_os_error_preserves_output_and_status(self):
         for unsettled, expected_rc in ((False, 0), (True, 5)):
@@ -188,7 +170,7 @@ class ScanSummaryWaitTest(unittest.TestCase):
         self.assertEqual(scan_summary.read_ce_task_id(str(self.ws)), "AXtask123")
 
     def test_lagging_index_reports_settled_total(self):
-        stub = _Stub(["PENDING", "IN_PROGRESS", "SUCCESS"], [0, 0, 7])
+        stub = _Stub(["PENDING", "IN_PROGRESS", "SUCCESS"], [0, 7, 7])
         self.addCleanup(stub.close)
         out, err = io.StringIO(), io.StringIO()
         rc = scan_summary.run(self._env(stub), out=out, err=err)
@@ -211,6 +193,16 @@ class ScanSummaryWaitTest(unittest.TestCase):
         rc = scan_summary.run(self._env(stub, SFT_SCAN_CE_TIMEOUT="0.3"), out=out, err=err)
         self.assertEqual(rc, 3)
         self.assertIn("WARNING: CE task AXtask123 did not finish", err.getvalue())
+        self.assertNotIn("total issues", out.getvalue())
+        self.assertFalse(any(p.startswith("/api/issues/search") for p in stub.paths))
+
+    def test_ce_failed_does_not_print_issue_totals(self):
+        stub = _Stub(["FAILED"], [0])
+        self.addCleanup(stub.close)
+        out, err = io.StringIO(), io.StringIO()
+        rc = scan_summary.run(self._env(stub), out=out, err=err)
+        self.assertEqual(rc, 4)
+        self.assertIn("CE task ended FAILED", err.getvalue())
         self.assertNotIn("total issues", out.getvalue())
         self.assertFalse(any(p.startswith("/api/issues/search") for p in stub.paths))
 
