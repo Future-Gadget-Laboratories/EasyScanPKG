@@ -2,10 +2,16 @@
 
 from __future__ import annotations
 
+import importlib
 import re
+import sys
 import unittest
-import xml.etree.ElementTree as ET  # nosec B405 — test only, repo-owned files
 from pathlib import Path
+from typing import Any
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
+
+safe_io = importlib.import_module("safe_io")
 
 ASSETS = Path(__file__).resolve().parents[1] / "assets"
 SVG_NS = "http://www.w3.org/2000/svg"
@@ -30,8 +36,8 @@ def _contrast(a: str, b: str) -> float:
 
 
 class SvgAssetTests(unittest.TestCase):
-    def _root(self, name: str) -> ET.Element:
-        return ET.parse(ASSETS / name).getroot()  # nosec B314 — repo-owned fixture
+    def _root(self, name: str) -> Any:
+        return safe_io.parse_xml_file(ASSETS / name)
 
     def test_files_exist(self) -> None:
         for name in NEW_ASSETS:
@@ -45,6 +51,8 @@ class SvgAssetTests(unittest.TestCase):
                 parts = root.get("viewBox", "").split()
                 self.assertEqual(len(parts), 4, "viewBox missing or malformed")
                 self.assertTrue(all(float(p) >= 0 for p in parts))
+                self.assertGreater(float(parts[2]), 0)
+                self.assertGreater(float(parts[3]), 0)
                 titles = [e for e in root.iter() if _local(e.tag) == "title"]
                 self.assertTrue(titles and (titles[0].text or "").strip(), "missing <title>")
 
@@ -102,6 +110,16 @@ class SvgAssetTests(unittest.TestCase):
             with self.subTest(name=name):
                 self.assertIn(f"assets/{name}", readme)
         self.assertNotRegex(readme, r"\]\(https?://[^)]*assets/")
+        self.assertNotRegex(readme, r"(?i)\b(?:src|srcset)=[\"']?(?:https?:)?//[^\"'>\s]*assets/")
+
+    def test_paladin_badge_links_to_existing_section(self) -> None:
+        readme = (ASSETS.parent / "README.md").read_text(encoding="utf-8")
+        self.assertIn("(assets/badge-paladin.svg)](#local-sin-scanner)", readme)
+        self.assertRegex(readme, r"(?m)^## Local sin scanner\s*$")
+
+    def test_doctype_is_rejected(self) -> None:
+        with self.assertRaises(safe_io.ET.ParseError):
+            safe_io.parse_xml('<!DOCTYPE svg [<!ENTITY x "y">]><svg xmlns="http://www.w3.org/2000/svg"/>')
 
 
 if __name__ == "__main__":

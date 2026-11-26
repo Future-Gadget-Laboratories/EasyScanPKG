@@ -12,7 +12,7 @@
 </p>
 
 [![scanned with EasyScan](assets/badge-easyscan.svg)](#multi-scanner-stage-easyscan-scan)
-[![guarded by Paladin](assets/badge-paladin.svg)](#multi-scanner-stage-easyscan-scan)
+[![guarded by Paladin](assets/badge-paladin.svg)](#local-sin-scanner)
 
 Bash + Python (stdlib-only) toolkit that wires a local or remote **SonarQube**
 server into **Cursor** / **Codex**: Docker Community stack, token bootstrap,
