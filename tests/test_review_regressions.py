@@ -120,7 +120,11 @@ class ReviewTests(unittest.TestCase):
     def test_project_key_is_data(self):
         text = (ROOT / "bin" / "sonar-scan").read_text()
         snippets = [part.split("\n", 1)[1] for part in text.split("python3 - <<'PY'")[1:]]
-        self.assertEqual(len(snippets), 2)
+        # The post-scan summary moved to lib/scan_summary.py (key read from env).
+        self.assertEqual(len(snippets), 1)
+        self.assertIn('SFT_PROJECT_KEY="$PROJECT_KEY" SFT_SCAN_WORKSPACE="$WORKSPACE"', text)
+        summary = (ROOT / "lib" / "scan_summary.py").read_text()
+        self.assertIn('key = env["SFT_PROJECT_KEY"]', summary)
         key = 'x"; raise RuntimeError("injected"); #'
         for snippet in snippets:
             prefix = snippet.split("\nPY", 1)[0].split("auth =", 1)[0]

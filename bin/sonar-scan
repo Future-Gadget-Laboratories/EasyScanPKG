@@ -193,45 +193,7 @@ _docker run --rm --network=host \
 
 echo ""
 echo "==> Waiting for server to process analysis"
-SFT_PROJECT_KEY="$PROJECT_KEY" python3 - <<'PY'
-import json, os, time, urllib.parse, urllib.request, base64
-url = os.environ["SONARQUBE_URL"].rstrip("/")
-token = os.environ["SONARQUBE_TOKEN"]
-key = os.environ["SFT_PROJECT_KEY"]
-auth = base64.b64encode(f"{token}:".encode()).decode()
-
-def get(path: str):
-    req = urllib.request.Request(f"{url}{path}", headers={"Authorization": f"Basic {auth}"})
-    with urllib.request.urlopen(req, timeout=30) as resp:
-        return json.loads(resp.read().decode())
-
-deadline = time.time() + 120
-status = "UNKNOWN"
-while time.time() < deadline:
-    tasks = get("/api/ce/activity?ps=1").get("tasks", [])
-    if tasks:
-        status = tasks[0].get("status", "UNKNOWN")
-        if status in ("SUCCESS", "FAILED", "CANCELED"):
-            break
-    time.sleep(2)
-print(f"    CE status: {status}")
-
-qs = urllib.parse.urlencode({
-    "componentKeys": key,
-    "ps": 50,
-    "resolved": "false",
-    "facets": "severities,types,rules",
-})
-data = get(f"/api/issues/search?{qs}")
-print(f"total issues: {data.get('total', 0)}")
-for issue in data.get("issues", [])[:25]:
-    comp = issue.get("component", "").split(":")[-1]
-    print(
-        f"  [{issue.get('severity')}/{issue.get('type')}] "
-        f"{comp}:{issue.get('line', '-')}  {issue.get('message', '')[:120]}  ({issue.get('rule')})"
-    )
-if data.get("total", 0) > 25:
-    print(f"  ... and {data['total'] - 25} more")
-print(f"\nUI: {url}/dashboard?id={urllib.parse.quote(key)}")
-print(f"Issues: {url}/project/issues?id={urllib.parse.quote(key)}&resolved=false")
-PY
+# Waits for the CE task (report-task.txt) and a settled issue count before
+# printing totals; token stays in the environment (never argv).
+SFT_PROJECT_KEY="$PROJECT_KEY" SFT_SCAN_WORKSPACE="$WORKSPACE" \
+  python3 "$ROOT/lib/scan_summary.py"
