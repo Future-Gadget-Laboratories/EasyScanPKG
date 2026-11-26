@@ -1,7 +1,7 @@
 {
   "schema": "easyscan.issue-checklist/v2",
   "generated_at": "2026-01-01T00:00:00+00:00",
-  "server_url": "http://user:secret@127.0.0.1:9000",
+  "server_url": "http://user:secret@sonar.example.test:9000",
   "project_key": "demo-report",
   "context": "local",
   "open_count": 5,
@@ -21,7 +21,7 @@
       "line": 12,
       "status": "OPEN",
       "done": false,
-      "url": "http://user:secret@127.0.0.1:9000/project/issues?id=demo-report&open=AAA111&resolved=false"
+      "url": "http://user:secret@sonar.example.test:9000/project/issues?id=demo-report&open=AAA111&resolved=false"
     },
     {
       "key": "sonar:aaa222",

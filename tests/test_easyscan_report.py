@@ -76,8 +76,8 @@ class GroupingTests(unittest.TestCase):
 class LinkSafetyTests(unittest.TestCase):
     def test_userinfo_stripped_and_scheme_checked(self) -> None:
         self.assertEqual(
-            safe_link("http://user:secret@127.0.0.1:9000/x?y=1"),
-            "http://127.0.0.1:9000/x?y=1",
+            safe_link("http://user:secret@sonar.example.test:9000/x?y=1"),
+            "http://sonar.example.test:9000/x?y=1",
         )
         self.assertIsNone(safe_link("javascript:alert(1)"))
         self.assertIsNone(safe_link("file:///etc/passwd"))
