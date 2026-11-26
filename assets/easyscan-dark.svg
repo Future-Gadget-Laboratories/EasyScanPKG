@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-labelledby="t">
+  <title id="t">EasyScan</title>
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0b2a47"/>
+      <stop offset="100%" stop-color="#061a2e"/>
+    </linearGradient>
+  </defs>
+  <rect x="1" y="1" width="126" height="126" rx="27" fill="url(#bg)" stroke="#1d4d78" stroke-width="2"/>
+  <circle cx="54" cy="54" r="26" fill="none" stroke="#8fd0ff" stroke-width="10"/>
+  <path d="M74 74l24 24" fill="none" stroke="#8fd0ff" stroke-width="12" stroke-linecap="round"/>
+  <path d="M42 54h24" fill="none" stroke="#ffffff" stroke-width="7" stroke-linecap="round"/>
+  <path d="M46 42h16" fill="none" stroke="#4aa3e0" stroke-width="5" stroke-linecap="round" opacity="0.85"/>
+  <path d="M46 66h16" fill="none" stroke="#4aa3e0" stroke-width="5" stroke-linecap="round" opacity="0.85"/>
+</svg>

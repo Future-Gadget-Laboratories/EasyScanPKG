@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-labelledby="t">
+  <title id="t">Paladin</title>
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0b2a47"/>
+      <stop offset="100%" stop-color="#061a2e"/>
+    </linearGradient>
+  </defs>
+  <rect x="1" y="1" width="126" height="126" rx="27" fill="url(#bg)" stroke="#1d4d78" stroke-width="2"/>
+  <path d="M64 18l38 12v30c0 26-17 40-38 50-21-10-38-24-38-50V30z" fill="#8fd0ff"/>
+  <path d="M46 62l13 13 24-26" fill="none" stroke="#0b2a47" stroke-width="10" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
