@@ -15,7 +15,7 @@ Authorization header; it never touches argv or output.
 
 Tunables (env): SFT_SCAN_CE_TIMEOUT (s, default 300), SFT_SCAN_ISSUES_TIMEOUT
 (s, default 180), SFT_SCAN_POLL_INTERVAL (s, default 3), SFT_SCAN_STABLE_POLLS
-(default 2).
+(default 2, with a minimum of two consecutive equal reads).
 """
 from __future__ import annotations
 
@@ -28,8 +28,10 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable, Optional
+
+from safe_io import urlopen as safe_urlopen
 
 TRANSIENT = (urllib.error.URLError, http.client.HTTPException, OSError, TimeoutError,
              ConnectionError, json.JSONDecodeError, KeyError, ValueError)
@@ -46,17 +48,16 @@ class SonarClient:
         self._auth = base64.b64encode(f"{token}:".encode()).decode()
         self.timeout = timeout
 
-    def get(self, path: str, params: Optional[dict] = None) -> dict:
+    def get(self, path: str, params: dict | None = None) -> dict:
         full = f"{self.url}{path}"
         if params:
             full += "?" + urllib.parse.urlencode(params)
         req = urllib.request.Request(full, headers={"Authorization": f"Basic {self._auth}"})
-        # The URL scheme is validated in __init__.
-        with urllib.request.urlopen(req, timeout=self.timeout) as resp:  # nosec B310  # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected
+        with safe_urlopen(req, timeout=self.timeout) as resp:
             return json.loads(resp.read().decode())
 
 
-def read_ce_task_id(workspace: str) -> Optional[str]:
+def read_ce_task_id(workspace: str) -> str | None:
     path = Path(workspace) / ".scannerwork" / "report-task.txt"
     try:
         for line in path.read_text(encoding="utf-8").splitlines():
@@ -67,7 +68,40 @@ def read_ce_task_id(workspace: str) -> Optional[str]:
     return None
 
 
-def wait_ce_task(client: SonarClient, task_id: Optional[str], project_key: str,
+def _ce_status(client: SonarClient, task_id: str | None, project_key: str) -> str:
+    if task_id:
+        return client.get("/api/ce/task", {"id": task_id}).get("task", {}).get("status", "UNKNOWN")
+    tasks = client.get("/api/ce/activity", {"component": project_key, "ps": 1}).get("tasks", [])
+    return tasks[0].get("status", "UNKNOWN") if tasks else "UNKNOWN"
+
+
+def _non_retryable(exc: urllib.error.HTTPError) -> bool:
+    return 400 <= exc.code < 500 and exc.code != 429
+
+
+def _issue_total(client: SonarClient, project_key: str) -> int | None:
+    try:
+        data = client.get("/api/issues/search", {
+            "componentKeys": project_key, "resolved": "false", "ps": 1,
+        })
+    except urllib.error.HTTPError as exc:
+        if _non_retryable(exc):
+            raise
+        return None
+    except TRANSIENT:
+        return None
+    try:
+        if not isinstance(data, dict) or "total" not in data:
+            raise KeyError("total")
+        total = int(data["total"])
+        if total < 0:
+            raise ValueError("total must be non-negative")
+        return total
+    except TRANSIENT:
+        return None
+
+
+def wait_ce_task(client: SonarClient, task_id: str | None, project_key: str,
                  timeout: float, interval: float,
                  sleep: Callable[[float], None] = time.sleep,
                  clock: Callable[[], float] = time.monotonic) -> tuple[str, bool]:
@@ -76,11 +110,11 @@ def wait_ce_task(client: SonarClient, task_id: Optional[str], project_key: str,
     status = "UNKNOWN"
     while True:
         try:
-            if task_id:
-                status = client.get("/api/ce/task", {"id": task_id}).get("task", {}).get("status", "UNKNOWN")
-            else:
-                tasks = client.get("/api/ce/activity", {"component": project_key, "ps": 1}).get("tasks", [])
-                status = tasks[0].get("status", "UNKNOWN") if tasks else "UNKNOWN"
+            status = _ce_status(client, task_id, project_key)
+        except urllib.error.HTTPError as exc:
+            if _non_retryable(exc):
+                raise
+            status = f"ERROR ({type(exc).__name__})"
         except TRANSIENT as exc:  # transient server hiccup: keep polling
             status = f"ERROR ({type(exc).__name__})"
         if status in CE_DONE:
@@ -93,22 +127,17 @@ def wait_ce_task(client: SonarClient, task_id: Optional[str], project_key: str,
 def wait_issue_count(client: SonarClient, project_key: str, timeout: float,
                      interval: float, stable_polls: int,
                      sleep: Callable[[float], None] = time.sleep,
-                     clock: Callable[[], float] = time.monotonic) -> tuple[Optional[int], bool]:
-    """Poll until a positive issue total repeats `stable_polls` times in a row.
+                     clock: Callable[[], float] = time.monotonic) -> tuple[int | None, bool]:
+    """Poll until any non-negative total repeats in consecutive reads.
 
-    Zero cannot distinguish a clean scan from index lag; it stays unsettled.
+    At least two equal reads are required, even when ``stable_polls`` is lower.
     Return (last_total, timed_out).
     """
     deadline = clock() + timeout
-    last: Optional[int] = None
+    last: int | None = None
     streak = 0
     while True:
-        try:
-            total = int(client.get("/api/issues/search", {
-                "componentKeys": project_key, "resolved": "false", "ps": 1,
-            }).get("total", 0))
-        except TRANSIENT:
-            total = None
+        total = _issue_total(client, project_key)
         if total is not None:
             streak = streak + 1 if total == last else 1
             last = total

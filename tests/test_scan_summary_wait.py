@@ -18,7 +18,7 @@ from unittest.mock import Mock, patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "lib"))
-import scan_summary  # noqa: E402
+import scan_summary
 
 FAKE_TOKEN = "squ_FAKE_SUMMARY_TOKEN_abcdef0123456789"
 
@@ -43,6 +43,9 @@ class _Stub:
                 if u.path == "/api/ce/task":
                     st = stub.ce_statuses.pop(0) if len(stub.ce_statuses) > 1 else stub.ce_statuses[0]
                     body = {"task": {"id": q["id"][0], "status": st}}
+                elif u.path == "/api/ce/activity":
+                    st = stub.ce_statuses[0]
+                    body = {"tasks": [{"status": st}]}
                 elif u.path == "/api/issues/search" and q.get("ps") == ["1"]:
                     t = stub.totals.pop(0) if len(stub.totals) > 1 else stub.totals[0]
                     body = {"total": t, "issues": []}
@@ -79,7 +82,7 @@ class ScanSummaryWaitTest(unittest.TestCase):
     def _env(self, stub, **extra):
         env = {"SONARQUBE_URL": stub.url, "SONARQUBE_TOKEN": FAKE_TOKEN, "SFT_PROJECT_KEY": "k",
                "SFT_SCAN_WORKSPACE": str(self.ws), "SFT_SCAN_POLL_INTERVAL": "0.01",
-               "SFT_SCAN_CE_TIMEOUT": "5", "SFT_SCAN_ISSUES_TIMEOUT": "5", "SFT_SCAN_STABLE_POLLS": "3"}
+               "SFT_SCAN_CE_TIMEOUT": "5", "SFT_SCAN_ISSUES_TIMEOUT": "5"}
         env.update(extra)
         return env
 
@@ -121,6 +124,28 @@ class ScanSummaryWaitTest(unittest.TestCase):
         client.get.side_effect = [{"total": 0}, {"total": 0}]
         self.assertEqual(scan_summary.wait_issue_count(client, "k", 10, 0, 2), (0, False))
         self.assertEqual(client.get.call_count, 2)
+
+    def test_missing_total_does_not_settle_as_zero(self):
+        client = Mock()
+        client.get.side_effect = [{}, {}, {"total": 0}, {"total": 0}]
+        self.assertEqual(scan_summary.wait_issue_count(client, "k", 10, 0, 2), (0, False))
+        self.assertEqual(client.get.call_count, 4)
+
+    def test_non_retryable_http_error_fails_fast(self):
+        client = Mock()
+        client.get.side_effect = urllib.error.HTTPError(
+            "http://example.test/api", 401, "unauthorized", {}, None)
+        with self.assertRaises(urllib.error.HTTPError):
+            scan_summary.wait_issue_count(client, "k", 300, 3, 2, sleep=Mock())
+        client.get.assert_called_once()
+
+    def test_default_stable_polls_is_two(self):
+        stub = _Stub(["SUCCESS"], [0])
+        self.addCleanup(stub.close)
+        out, err = io.StringIO(), io.StringIO()
+        rc = scan_summary.run(self._env(stub), out=out, err=err, sleep=lambda _: None)
+        self.assertEqual(rc, 0, err.getvalue())
+        self.assertEqual(sum("ps=1" in path for path in stub.paths), 2)
 
     def test_changed_count_needs_two_equal_observations(self):
         client = Mock()
@@ -206,6 +231,25 @@ class ScanSummaryWaitTest(unittest.TestCase):
         self.assertNotIn("total issues", out.getvalue())
         self.assertFalse(any(p.startswith("/api/issues/search") for p in stub.paths))
 
+    def test_ce_canceled_does_not_print_issue_totals(self):
+        stub = _Stub(["CANCELED"], [0])
+        self.addCleanup(stub.close)
+        out, err = io.StringIO(), io.StringIO()
+        rc = scan_summary.run(self._env(stub), out=out, err=err)
+        self.assertEqual(rc, 4)
+        self.assertIn("CE task ended CANCELED", err.getvalue())
+        self.assertNotIn("total issues", out.getvalue())
+        self.assertFalse(any(p.startswith("/api/issues/search") for p in stub.paths))
+
+    def test_missing_report_task_uses_ce_activity(self):
+        (self.ws / ".scannerwork" / "report-task.txt").unlink()
+        stub = _Stub(["SUCCESS"], [0])
+        self.addCleanup(stub.close)
+        out, err = io.StringIO(), io.StringIO()
+        rc = scan_summary.run(self._env(stub), out=out, err=err)
+        self.assertEqual(rc, 0, err.getvalue())
+        self.assertTrue(any(path.startswith("/api/ce/activity?") for path in stub.paths))
+
     def test_unsettled_count_warns(self):
         stub = _Stub(["SUCCESS"], list(range(1000)))
         self.addCleanup(stub.close)
@@ -220,7 +264,7 @@ class ScanSummaryWaitTest(unittest.TestCase):
         self.addCleanup(stub.close)
         env = {**os.environ, **self._env(stub)}
         proc = subprocess.run([sys.executable, str(ROOT / "lib" / "scan_summary.py")],
-                              env=env, capture_output=True, text=True, timeout=30)
+                              env=env, capture_output=True, text=True, timeout=30, check=False)
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertIn("total issues: 2", proc.stdout)
         self.assertNotIn(FAKE_TOKEN, proc.stdout + proc.stderr)
