@@ -1,5 +1,19 @@
 # EasyScanPKG
 
+<p>
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/easyscan-dark.svg">
+    <img src="assets/easyscan.svg" alt="EasyScan logo" width="64" height="64">
+  </picture>
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/paladin-dark.svg">
+    <img src="assets/paladin.svg" alt="Paladin logo" width="64" height="64">
+  </picture>
+</p>
+
+[![scanned with EasyScan](assets/badge-easyscan.svg)](#multi-scanner-stage-easyscan-scan)
+[![guarded by Paladin](assets/badge-paladin.svg)](#multi-scanner-stage-easyscan-scan)
+
 Bash + Python (stdlib-only) toolkit that wires a local or remote **SonarQube**
 server into **Cursor** / **Codex**: Docker Community stack, token bootstrap,
 SonarScanner CLI, MCP helpers, and an agent-ingestible issue checklist.
