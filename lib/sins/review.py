@@ -253,7 +253,11 @@ def _validate_finding(finding: Any, index: int, seen: set[str]) -> tuple[list[st
     if isinstance(severity, str) and severity in {"blocker", "major", "minor"} and "proposed_fix" not in finding:
         errors.append(f"{prefix}.proposed_fix: required for actionable findings")
     if "proposed_fix" in finding:
-        errors.extend(_fix_errors(finding["proposed_fix"], f"{prefix}.proposed_fix"))
+        if finding["proposed_fix"] is None:
+            if severity != "nit":
+                errors.append(f"{prefix}.proposed_fix: null is allowed only for nit findings")
+        else:
+            errors.extend(_fix_errors(finding["proposed_fix"], f"{prefix}.proposed_fix"))
     proposal = finding.get("new_sin_proposal")
     if "new_sin_proposal" in finding and proposal is not None and not isinstance(proposal, (dict, str)):
         errors.append(f"{prefix}.new_sin_proposal: must be an object, string, or null")

@@ -61,15 +61,27 @@ class RuleLoadingTests(unittest.TestCase):
             with self.assertRaisesRegex(RuleError, "examples.fixed"):
                 load_rule(path)
 
+    def test_rewrite_requires_a_non_empty_template(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "rewrite.toml"
+            content = RULE.format(id="rewrite-sin", extra="")
+            content = content.replace('engine = "regex"', 'engine = "ast-grep"')
+            content = content.replace('[match]\npattern = "bad"', '[match.rule]\npattern = "bad()"')
+            content = content.replace('[examples]\nbad = ["bad"]\ngood = ["good"]',
+                                      '[fix]\nkind = "rewrite"\n\n[examples]\nbad = ["bad()"]\ngood = ["good()"]\nfixed = ["ok()"]')
+            path.write_text(content, encoding="utf-8")
+            with self.assertRaisesRegex(RuleError, "fix.template"):
+                load_rule(path)
+
     def test_selected_unimplemented_engine_fails(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             pack = repo / "pack"
             pack.mkdir()
             (pack / "custom.toml").write_text(
-                RULE.format(id="custom-sin", extra="").replace('engine = "regex"', 'engine = "ast-grep"'),
+                RULE.format(id="custom-sin", extra="").replace('engine = "regex"', 'engine = "opengrep"'),
                 encoding="utf-8")
-            with self.assertRaisesRegex(RuleError, "not implemented in S1"):
+            with self.assertRaisesRegex(RuleError, "not implemented"):
                 load_rules(repo, [pack], ["custom-sin"])
 
     def test_repo_local_additions_and_shadowing(self) -> None:
@@ -91,14 +103,13 @@ class RuleLoadingTests(unittest.TestCase):
             ast_rule = pack / "ast.toml"
             ast_rule.write_text(
                 RULE.format(id="ast-sin", extra="").replace('engine = "regex"', 'engine = "ast-grep"')
-                .replace('[match]\npattern = "bad"', '[match]\nrule = "except_clause"'),
+                .replace('[match]\npattern = "bad"', '[match]\nrule = { kind = "except_clause" }'),
                 encoding="utf-8",
             )
             (pack / "selected.toml").write_text(RULE.format(id="selected-sin", extra=""), encoding="utf-8")
             selected = load_rules(repo, [pack], ["selected-sin"])
             self.assertEqual([rule.id for rule in selected], ["selected-sin"])
-            with self.assertRaisesRegex(RuleError, "not implemented in S1"):
-                load_rules(repo, [pack], ["ast-sin"])
+            self.assertEqual(load_rules(repo, [pack], ["ast-sin"])[0].engine, "ast-grep")
             with self.assertRaisesRegex(RuleError, "rules-dir"):
                 load_rules(repo, [repo / "missing"], [])
 

@@ -1,0 +1,26 @@
+id = "py-open-without-encoding"
+version = 1
+phrase = "specify an encoding when opening text files"
+description = "Text file encoding should be explicit and stable across hosts."
+language = "python"
+severity = "info"
+mortal = false
+engine = "ast-grep"
+tags = ["portability"]
+
+[paths]
+include = ["**/*.py"]
+exclude = []
+
+[match.rule]
+pattern = "open($$$ARGS)"
+
+[fix]
+kind = "rewrite"
+fix_hint = "Use UTF-8 for text files unless the format specifies another encoding."
+
+[examples]
+bad = ["open('data.txt')\n", "open('data.txt', 'r')\n", "open('data.txt',)\n"]
+good = ["open('data.txt', 'rb')\n", "open('data.txt', mode='rb')\n", "open('data.txt', encoding='utf-8')\n"]
+fixed = ["open('data.txt', encoding=\"utf-8\")\n", "open('data.txt', 'r', encoding=\"utf-8\")\n",
+         "open('data.txt', encoding=\"utf-8\")\n"]

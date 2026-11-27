@@ -25,7 +25,7 @@ class PolicyTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             repo = Path(temp)
             (repo / "src").mkdir()
-            (repo / "src/a.py").write_text("except:\n", encoding="utf-8")
+            (repo / "src/a.py").write_text("try:\n    pass\nexcept:\n    pass\n", encoding="utf-8")
             (repo / ".sins").mkdir()
             policy = repo / ".sins/policy.toml"
             policy.write_text('[sins."py-bare-except"]\nmortal = true\nmortal_threshold = 8\n', encoding="utf-8")
@@ -43,15 +43,16 @@ class PolicyTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             repo = Path(temp)
             code = repo / "a.py"
-            code.write_text('except: # sins: forgive py-bare-except -- legacy\n'
-                            '# sins: forgive py-bare-except -- documented\nexcept:\n'
-                            'text = "# sins: forgive py-bare-except -- fake"\nexcept:\n', encoding="utf-8")
+            code.write_text('try:\n    pass\nexcept: # sins: forgive py-bare-except -- legacy\n    pass\n'
+                            'try:\n    pass\n# sins: forgive py-bare-except -- documented\nexcept:\n    pass\n'
+                            'text = "# sins: forgive py-bare-except -- fake"\ntry:\n    pass\nexcept:\n    pass\n',
+                            encoding="utf-8")
             rc, out = run("scan", "--repo", str(repo), "--rule", "py-bare-except", "--format", "json")
             self.assertEqual(rc, 0)
             report = json.loads(out)
             self.assertEqual([item["forgiven"] for item in report["findings"] if item["sin"] == "py-bare-except"],
                              [True, True, False])
-            code.write_text("except: # sins: forgive py-bare-except\n", encoding="utf-8")
+            code.write_text("try:\n    pass\nexcept: # sins: forgive py-bare-except\n    pass\n", encoding="utf-8")
             rc, out = run("scan", "--repo", str(repo), "--rule", "py-bare-except", "--format", "json")
             self.assertEqual(rc, 0)
             report = json.loads(out)
@@ -66,7 +67,8 @@ class PolicyTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             repo = Path(temp)
             (repo / "a.py").write_text(
-                'text = "# sins: forgive py-bare-except -- fake"\nexcept:\n', encoding="utf-8")
+                'text = "# sins: forgive py-bare-except -- fake"\ntry:\n    pass\nexcept:\n    pass\n',
+                encoding="utf-8")
             rc, output = run("scan", "--repo", str(repo), "--rule", "py-bare-except", "--fail-on", "any",
                              "--format", "json")
             self.assertEqual(rc, 1)
@@ -75,7 +77,8 @@ class PolicyTests(unittest.TestCase):
     def test_forgiveness_without_reason_emits_meta_sin(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             repo = Path(temp)
-            (repo / "a.py").write_text("except: # sins: forgive py-bare-except\n", encoding="utf-8")
+            (repo / "a.py").write_text("try:\n    pass\nexcept: # sins: forgive py-bare-except\n    pass\n",
+                                        encoding="utf-8")
             rc, output = run("scan", "--repo", str(repo), "--rule", "py-bare-except", "--format", "json")
             report = json.loads(output)
             self.assertEqual(rc, 0)
@@ -88,7 +91,7 @@ class PolicyTests(unittest.TestCase):
             rc, output = run("scan", "--repo", str(repo), "--rule", "cpp-usleep", "--format", "json")
             self.assertEqual(rc, 0)
             self.assertTrue(json.loads(output)["findings"][0]["forgiven"])
-            (repo / "a.py").write_text("except:  # //forgive me\n", encoding="utf-8")
+            (repo / "a.py").write_text("try:\n    pass\nexcept:  # //forgive me\n    pass\n", encoding="utf-8")
             rc, output = run("scan", "--repo", str(repo), "--rule", "py-bare-except", "--format", "json")
             self.assertEqual(rc, 0)
             self.assertFalse(json.loads(output)["findings"][0]["forgiven"])
@@ -97,7 +100,8 @@ class PolicyTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             repo = Path(temp)
             (repo / "a.py").write_text(
-                "x = 1 # sins: forgive py-bare-except -- inline\nexcept:\n", encoding="utf-8")
+                "x = 1 # sins: forgive py-bare-except -- inline\ntry:\n    pass\nexcept:\n    pass\n",
+                encoding="utf-8")
             rc, output = run("scan", "--repo", str(repo), "--rule", "py-bare-except", "--fail-on", "any",
                              "--format", "json")
             self.assertEqual(rc, 1)
@@ -107,7 +111,9 @@ class PolicyTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             repo = Path(temp)
             (repo / "a.py").write_text(
-                "# sins: forgive py-bare-except, py-assert-validation -- two rules\nexcept:\n",
+                "try:\n    pass\n"
+                "# sins: forgive py-bare-except, py-assert-validation -- two rules\n"
+                "except:\n    pass\n",
                 encoding="utf-8")
             rc, output = run("scan", "--repo", str(repo), "--rule", "py-bare-except", "--format", "json")
             self.assertEqual(rc, 0)
@@ -119,7 +125,7 @@ class PolicyTests(unittest.TestCase):
             (repo / ".sins").mkdir()
             (repo / ".sins/policy.toml").write_text(
                 '[sins."cpp-usleep"]\nmortal = true\n', encoding="utf-8")
-            (repo / "a.py").write_text("except:\n", encoding="utf-8")
+            (repo / "a.py").write_text("try:\n    pass\nexcept:\n    pass\n", encoding="utf-8")
             rc, output = run("scan", "--repo", str(repo), "--rule", "py-bare-except", "--format", "json")
             self.assertEqual(rc, 0)
             self.assertEqual(len(json.loads(output)["findings"]), 1)
